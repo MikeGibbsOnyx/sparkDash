@@ -18,6 +18,7 @@ import {
   validatePrefillBudget,
 } from "./validate.js";
 import { authorizeUpgrade, configuredToken, createAuthMiddleware, requireRemoteAuth } from "./auth.js";
+import { inspectHealth } from "./health.js";
 import { getSettings, updateSettings, loadSettings } from "./settings.js";
 import { broadcastForLanIp, effectiveMac, normalizeMac, sendWol } from "./wol.js";
 import {
@@ -286,6 +287,10 @@ const server = createServer(app);
 
 app.use(express.json());
 app.use(createAuthMiddleware());
+
+app.get("/api/health", (_req, res) => {
+  res.json(inspectHealth(BIND_HOST));
+});
 
 function clientKey(req) {
   return req.ip || req.socket?.remoteAddress || "unknown";
