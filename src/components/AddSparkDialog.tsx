@@ -93,14 +93,17 @@ export function AddSparkDialog({ open, onClose, onAdded, defaultLlmPort = 8888 }
       // Ephemeral test — no registry mutation
       const result = await testSparkConfig(payload);
       const parts: string[] = [];
-      if (result.ssh.ok) parts.push("SSH ✓");
-      else parts.push(`SSH ✗ ${result.ssh.message}`);
-      if (result.llm.ok) parts.push("LLM ✓");
-      else parts.push(`LLM ✗ ${result.llm.message}`);
-
+      const capability = (name: string, result?: { ok: boolean; message: string; skipped?: boolean }) => {
+        if (!result) return;
+        if (result.skipped) parts.push(`${name} skipped`);
+        else parts.push(`${name} ${result.ok ? "pass" : `fail: ${result.message}`}`);
+      };
+      capability("Host", result.ssh);
+      capability("LLM", result.llm);
+      capability("Comfy", result.comfy);
       setTestResult({
         ok: result.ok,
-        message: result.ok ? "Connection successful" : parts.join(" | "),
+        message: parts.join(" · "),
       });
     } catch (err: any) {
       setTestResult({ ok: false, message: err.message });
@@ -174,7 +177,7 @@ export function AddSparkDialog({ open, onClose, onAdded, defaultLlmPort = 8888 }
               value={config.lanIp}
               onChange={(e) => update({ lanIp: e.target.value })}
               className="w-full rounded border border-border bg-surface-elevated px-3 py-1.5 text-xs text-text outline-none focus:border-accent"
-              placeholder="192.168.1.100"
+              placeholder="192.168.1.100 (optional for this host)"
             />
           </div>
 
@@ -289,7 +292,7 @@ export function AddSparkDialog({ open, onClose, onAdded, defaultLlmPort = 8888 }
             <button
               type="button"
               onClick={handleTest}
-              disabled={testing || !config.lanIp}
+              disabled={testing || (!config.isLocal && !config.lanIp)}
               className="rounded border border-border bg-surface-elevated px-3 py-1.5 text-xs text-muted hover:bg-surface-hover disabled:opacity-50"
             >
               {testing ? "Testing..." : "Test"}
@@ -304,7 +307,7 @@ export function AddSparkDialog({ open, onClose, onAdded, defaultLlmPort = 8888 }
             <button
               type="button"
               onClick={handleSave}
-              disabled={saving || !config.name || !config.lanIp}
+              disabled={saving || !config.name || (!config.isLocal && !config.lanIp)}
               className="rounded bg-accent px-3 py-1.5 text-xs font-medium text-white hover:bg-accent-hover disabled:opacity-50"
             >
               {saving ? "Saving..." : "Save"}
