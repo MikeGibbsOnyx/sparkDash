@@ -6,9 +6,9 @@
 
 ---
 
-## 0. Ground truth (live, not the FLEET-BRAIN table)
+## 0. Ground truth (live; FLEET-BRAIN inventory reconciled t_631f607c)
 
-**Discrepancy flag:** FLEET-BRAIN.md says "Spark 3 unknown / Spark 4 boxed". Live recon the same evening (t_15e0a6b7 runs 9–10) accounts for **four GB10 dens, two of them idle**, plus a 200G QSFP switch that is cabled, link-up, and carrying L2 traffic. This plan targets the live matrix. Reconciliation card: t_631f607c.
+**Reconciled:** FLEET-BRAIN.md v0.2 names rin-den/mike-den and records switch L1/L2 live. Serving-scope policy is unchanged (Pair A = TP group; the two idle dens stay out of TP until Aug-13 postmortem). This plan still targets the live matrix.
 
 | Node | Tailscale | RAM avail (last probe) | Running now | Fabric ports | Lane today |
 |---|---|---|---|---|---|
@@ -108,7 +108,7 @@ Fabric: 200G QSFP switch L1/L2 LIVE (LLDP reflection, 4 nodes × 2 ports up). Mi
 | G6 | **Render submission endpoint** | doesn't exist; PAIR can't host it | d3 build (GO-pending) |
 | G7 | **Beast reachability/ownership** | offline, Windows path unproven | Mike: power/remote policy call |
 | G8 | **pyannote HF token** | gated weights, no credential | Mike-supplied secret (never in repo) |
-| G9 | **Spark 3/4 postmortem + unbox** | Aug-13 failure mode unroot-caused | separate Mike decision (FLEET-BRAIN §6.4) |
+| G9 | **Aug-13 interconnect postmortem** | failure mode unroot-caused; rin-den + mike-den stay out of TP until it lands | separate Mike decision (FLEET-BRAIN §6.4) |
 | G10 | **Backup regime for the store** | canon on one box = single copy again | mirror policy on mike-den + verification cron (d1 scope) |
 
 Everything else named in §1–5 has a box. That's the MECE claim: 10 gaps, all with owners or gates.
@@ -119,11 +119,11 @@ Everything else named in §1–5 has a box. That's the MECE claim: 10 gaps, all 
 
 | Decision area | Card | State |
 |---|---|---|
-| D1 weights store + manifest + ingest | t_631f607c (doc-sync parent chain) → d1 below | spec locked, writes GO-pending |
-| D2 day-ops menu placement | d2 below | spec locked, needs Sparkling Kit item list |
-| D3 creative lane endpoint build | d3 below | spec locked, build GO-pending |
-| D4 gateway restore | d4 below | prerequisite for §4, needs GO |
+| D1 weights store + manifest + ingest | t_8f548a73 | spec locked, writes GO-pending |
+| D2 day-ops menu placement | t_c6892171 | spec locked, needs Sparkling Kit item list |
+| D3 creative lane endpoint build | t_d59f20e5 | spec locked, build GO-pending |
+| D4 gateway restore | t_26d16dbb | prerequisite for §4, needs GO |
 | D5 coexistence caps enforcement | folded into watchdog scope (d1-adjacent) | needs iris-den FLEET-BRAIN §6.3 answer |
-| Doc drift (FLEET-BRAIN stale table) | t_631f607c | created, child of this task |
+| Doc drift (FLEET-BRAIN stale table) | t_631f607c | reconciled in FLEET-BRAIN v0.2 |
 
 **Open questions owned by Mike (not workers):** FLEET-BRAIN §6 four checkmarks, fabric sudo one-liner (G4), beast power policy (G7), Sparkling Kit scope list, pyannote token (G8).
