@@ -1,44 +1,46 @@
 import fs from "fs";
 import path from "path";
-import { HOST_PATHS, GPU_MEMORY_JSON_PATH, DGX_SPARK, HARDWARE_DEFAULTS, POLL_INTERVAL_NVERR } from "../config.js";
+import { HOST_PATHS, GPU_MEMORY_JSON_PATH, DGX_SPARK, HARDWARE_DEFAULTS } from "../config.js";
 import { normalizeMac, WOL_INTERFACE } from "../wol.js";
 import { sshExec } from "./ssh.js";
-
-const NVERR_JOURNAL_CMD =
-  'journalctl -k --no-pager -q --grep=NV_ERR_NO_MEMORY 2>/dev/null | grep -c NV_ERR_NO_MEMORY || true';
-
-/**
- * Parse `grep -c` stdout into a non-negative integer. Exported for tests.
- * @param {unknown} raw
- * @returns {number}
- */
-export function parseNvErrNoMemoryCount(raw) {
-  const line = String(raw ?? "").trim().split("\n").pop() ?? "";
-  const n = Number.parseInt(line, 10);
-  if (!Number.isFinite(n) || n < 0) return 0;
-  return n;
-}
-
-export const COLLECTION_SUCCESS = Symbol("sparkdash.collectionSuccess");
-
-export function collectionWasSuccessful(result) {
-  return result?.[COLLECTION_SUCCESS] === true;
-}
-
-function tagCollectionResult(result, successful) {
-  Object.defineProperty(result, COLLECTION_SUCCESS, {
-    value: successful === true,
-    enumerable: false,
-    configurable: true,
-  });
-  return result;
-}
 
 /**
  * SystemCollector — collects hardware metrics for a Spark.
  * In Phase 2, this is the LOCAL path only (no SSH).
  * Remote path added in Phase 3.
  */
+/**
+ * Remote CPU probe command. Exported for testing.
+ *
+ * The sensor read is exit-tolerant on purpose. A host with no hwmon match and
+ * no readable thermal_zone temp file leaves the glob unexpanded, so the final
+ * `cat` exits 1 — and it is the last command in the ";"-joined chain, so the
+ * whole remote command exits non-zero. `sshExec` uses `execFile`, which rejects
+ * on a non-zero exit, so `_getRemoteCpu` would throw and fall back to
+ * `_defaultCpu()`: usage, draw and tdp lost as well as temperature.
+ * `_parseSensorTemp` already maps "nothing readable" to 0, so degrading to
+ * "no temperature" is the intended behaviour.
+ *
+ * @param {"spark"|"host"|undefined} kind
+ * @returns {string}
+ */
+export function buildRemoteCpuCommand(kind) {
+  return [
+    "cat /proc/stat | head -1",
+    "echo '---'",
+    "cat /proc/cpuinfo | grep -E 'CPU architecture|aarch64' | head -1",
+    ...(kind === "host"
+      ? [
+          "echo '---'",
+          // Same hwmon-then-thermal priority as local `_getCPUTemperature()`.
+          // GB10 also exposes nvme/mlx5 sensors; the name allowlist keeps those out.
+          'for h in /sys/class/hwmon/*; do n=$(cat "$h/name" 2>/dev/null); case "$n" in coretemp|k10temp|zenpower|acpitz) for t in "$h"/temp*_input; do cat "$t" 2>/dev/null; break; done;; esac; done',
+          "cat /sys/class/thermal/thermal_zone*/temp 2>/dev/null || true",
+        ]
+      : []),
+  ].join("; ");
+}
+
 export class SystemCollector {
   constructor(spark) {
     this.spark = spark;
@@ -47,7 +49,6 @@ export class SystemCollector {
     // Rate-tracking baselines
     this.lastNetworkStats = new Map();
     this.lastCpuStat = null;
-    this._cpuCollectionSequence = 0;
     /** Last computed CPU usage percentage (0-100) — used by GPU system-draw estimate. */
     this.lastCpuUsagePct = 0;
     this.lastRaplReading = null;
@@ -63,98 +64,46 @@ export class SystemCollector {
 
     // Cached hardware info
     this._hardwareInfo = null;
-    /** Cached NVRM NV_ERR_NO_MEMORY count (slow journal scan). */
-    this._nvErrCache = { count: 0, at: 0 };
   }
 
   /** Collect GPU metrics (temperature, usage, power, VRAM). */
   async collectGpu() {
+    if (!this.spark.isLocal) return this._getRemoteGpu();
     try {
-      const gpuData = this.spark.isLocal
-        ? await this._getGPUAll()
-        : await this._getRemoteGpu();
-      return tagCollectionResult(gpuData, this._isSuccessfulGpuCollection(gpuData));
+      const gpuData = await this._getGPUAll();
+      return gpuData;
     } catch (err) {
       console.error(`[SystemCollector] GPU error for ${this.spark.id}:`, err.message);
-      return tagCollectionResult(this._defaultGpu(), false);
+      return this._defaultGpu();
     }
   }
 
   /** Collect CPU metrics (usage, temperature, power). */
   async collectCpu() {
-    const collectionSequence = ++this._cpuCollectionSequence;
+    if (!this.spark.isLocal) return this._getRemoteCpu();
     try {
-      if (!this.spark.isLocal) {
-        const cpuData = await this._getRemoteCpu(collectionSequence);
-        return tagCollectionResult(cpuData, this._isSuccessfulCpuCollection(cpuData));
-      }
-
       // Read /proc/stat once and compute usage BEFORE estimating power.
       // Previously _getCPUPower re-read /proc/stat in parallel with _getCPUUsage,
       // racing on lastCpuStat and producing 0% (idle power) on the first poll.
       const usage = await this._getCPUUsage();
-      if (!this._isValidCpuStat(usage)) {
-        throw new Error("invalid /proc/stat CPU counters");
-      }
       const totalDiff = usage.total - (this.lastCpuStat?.total || usage.total);
       const usedDiff = usage.used - (this.lastCpuStat?.used || usage.used);
       const cpuPercentage = totalDiff > 0 ? Math.round((usedDiff / totalDiff) * 100) : 0;
       const usageFraction = totalDiff > 0 ? usedDiff / totalDiff : 0;
+      this.lastCpuStat = usage;
+      this.lastCpuUsagePct = cpuPercentage;
+
       // Temperature and power can run in parallel — power is now a pure
       // function of the usage fraction (no extra /proc/stat read).
       const [temp, power] = await Promise.all([
         this._getCPUTemperature(),
         this._getCPUPower(usageFraction),
       ]);
-      if (collectionSequence === this._cpuCollectionSequence) {
-        this.lastCpuStat = usage;
-        this.lastCpuUsagePct = cpuPercentage;
-      }
-      const cpuData = { usage: cpuPercentage, temperature: temp, ...power };
-      return tagCollectionResult(cpuData, this._isSuccessfulCpuCollection(cpuData));
+      return { usage: cpuPercentage, temperature: temp, ...power };
     } catch (err) {
       console.error(`[SystemCollector] CPU error for ${this.spark.id}:`, err.message);
-      return tagCollectionResult(this._defaultCpu(), false);
+      return this._defaultCpu();
     }
-  }
-
-  _isSuccessfulGpuCollection(gpu) {
-    return (
-      Number.isFinite(gpu?.temperature) &&
-      gpu.temperature > 0 &&
-      Number.isFinite(gpu?.usage) &&
-      Number.isFinite(gpu?.power?.draw) &&
-      gpu.power.draw >= 0 &&
-      Number.isFinite(gpu?.power?.limit) &&
-      gpu.power.limit > 0
-    );
-  }
-
-  _isSuccessfulCpuCollection(cpu) {
-    return (
-      Number.isFinite(cpu?.usage) &&
-      cpu.usage >= 0 &&
-      cpu.usage <= 100 &&
-      Number.isFinite(cpu?.draw) &&
-      cpu.draw > 0 &&
-      Number.isFinite(cpu?.tdp) &&
-      cpu.tdp > 0
-    );
-  }
-
-  _isValidCpuStat(cpuStat) {
-    return (
-      Number.isFinite(cpuStat?.total) &&
-      cpuStat.total > 0 &&
-      Number.isFinite(cpuStat?.used) &&
-      cpuStat.used >= 0 &&
-      cpuStat.used <= cpuStat.total
-    );
-  }
-
-  /** Prevent an earlier monitor lifecycle from updating shared CPU baselines. */
-  invalidatePendingCollections() {
-    this._cpuCollectionSequence += 1;
   }
 
   /** Collect RAM metrics. */
@@ -240,7 +189,6 @@ export class SystemCollector {
       vram,
       processes,
       throttle: gpu.throttle,
-      nvErrNoMemory: await this._nvErrNoMemory(),
     };
   }
 
@@ -1078,7 +1026,6 @@ export class SystemCollector {
         vram: { used: usedMB, total: totalMB, percentage, available: availableMB },
         processes,
         throttle: gpu.throttle,
-        nvErrNoMemory: await this._nvErrNoMemory(),
       };
     } catch (err) {
       console.error(`[SystemCollector] Remote GPU error for ${this.spark.id}:`, err.message);
@@ -1086,52 +1033,21 @@ export class SystemCollector {
     }
   }
 
-  /**
-   * One SSH round trip: /proc/stat, CPU arch, then the same hwmon-then-thermal
-   * sensor dump local `_getCPUTemperature()` uses. `|| true` on the thermal
-   * glob keeps a missing zone from failing the whole CPU poll (sshExec treats
-   * any non-zero exit as a hard error).
-   */
-  _buildRemoteCpuCommand() {
-    return [
-      "cat /proc/stat | head -1",
-      "echo '---'",
-      "cat /proc/cpuinfo | grep -E 'CPU architecture|aarch64' | head -1",
-      "echo '---'",
-      // GB10 also exposes nvme/mlx5 sensors; the name allowlist keeps those out.
-      'for h in /sys/class/hwmon/*; do n=$(cat "$h/name" 2>/dev/null); case "$n" in coretemp|k10temp|zenpower|acpitz) for t in "$h"/temp*_input; do cat "$t" 2>/dev/null; break; done;; esac; done',
-      "cat /sys/class/thermal/thermal_zone*/temp 2>/dev/null || true",
-    ].join("; ");
-  }
-
-  async _getRemoteCpu(collectionSequenceOrExecutor = null, executor = sshExec) {
-    // Keep the injectable executor used by focused collector tests while also
-    // accepting the lifecycle sequence supplied by collectCpu().
-    const sshExecutor =
-      typeof collectionSequenceOrExecutor === "function" ? collectionSequenceOrExecutor : executor;
-    const attemptSequence = Number.isInteger(collectionSequenceOrExecutor)
-      ? collectionSequenceOrExecutor
-      : ++this._cpuCollectionSequence;
+  async _getRemoteCpu() {
     try {
-      const cmd = this._buildRemoteCpuCommand();
+      const cmd = buildRemoteCpuCommand(this.spark.kind);
 
-      const output = await sshExecutor(this.spark, cmd);
+      const output = await sshExec(this.spark, cmd);
       const sections = output.split("---");
       const statOut = sections[0]?.trim() || "";
       const cpuinfoOut = sections[1]?.trim() || "";
-      const tempOut = sections[2] || "";
+      const tempOut = this.spark.kind === "host" ? sections[2] || "" : "";
 
       const cpuStat = this._parseCPUUsage(statOut);
-      if (!this._isValidCpuStat(cpuStat)) {
-        throw new Error("invalid remote /proc/stat CPU counters");
-      }
       const totalDiff = cpuStat.total - (this.lastCpuStat?.total || cpuStat.total);
       const usedDiff = cpuStat.used - (this.lastCpuStat?.used || cpuStat.used);
       const usage = totalDiff > 0 ? Math.round((usedDiff / totalDiff) * 100) : 0;
-      if (attemptSequence === this._cpuCollectionSequence) {
-        this.lastCpuStat = cpuStat;
-        this.lastCpuUsagePct = usage;
-      }
+      this.lastCpuStat = cpuStat;
 
       // ARM/Neoverse power estimation
       const isArm = /CPU architecture:\s*[89]|aarch64|ARMv[89]|armv[89]/i.test(cpuinfoOut);
@@ -1141,7 +1057,7 @@ export class SystemCollector {
 
       return {
         usage,
-        temperature: this._parseSensorTemp(tempOut),
+        temperature: this.spark.kind === "host" ? this._parseSensorTemp(tempOut) : 0,
         draw: Math.round(draw * 10) / 10,
         tdp: Math.round(tdp),
       };
@@ -1546,7 +1462,7 @@ export class SystemCollector {
         });
       }
     }
-    return fs.readFileSync(`/proc/net/${relPath}`, "utf-8");
+    return this._readHostFile(`/proc/net/${relPath}`);
   }
 
   /** Lightweight liveness for local Sparks. */
@@ -1597,34 +1513,6 @@ export class SystemCollector {
     return fs.promises.statfs(dir);
   }
 
-  /**
-   * Count NVRM `NV_ERR_NO_MEMORY` lines in the kernel journal since boot.
-   * Cached for POLL_INTERVAL_NVERR — never on the 2s GPU/memory loop uncached.
-   * @returns {Promise<number>}
-   */
-  async _nvErrNoMemory() {
-    const now = Date.now();
-    if (this._nvErrCache.at > 0 && now - this._nvErrCache.at < POLL_INTERVAL_NVERR) {
-      return this._nvErrCache.count;
-    }
-    try {
-      let out;
-      if (this.spark.isLocal) {
-        out = this._hasHostProc()
-          ? await this._execOnHost(NVERR_JOURNAL_CMD)
-          : await this._exec(NVERR_JOURNAL_CMD);
-      } else {
-        out = await sshExec(this.spark, NVERR_JOURNAL_CMD, { timeoutMs: 8000 });
-      }
-      const count = parseNvErrNoMemoryCount(out);
-      this._nvErrCache = { count, at: now };
-      return count;
-    } catch {
-      this._nvErrCache.at = now;
-      return this._nvErrCache.count;
-    }
-  }
-
   // ─── Default metrics ─────────────────────────────────────
   _defaultGpu() {
     return {
@@ -1634,7 +1522,6 @@ export class SystemCollector {
       vram: { used: 0, total: 0, percentage: 0, available: 0 },
       processes: [],
       throttle: this._defaultThrottle(),
-      nvErrNoMemory: 0,
     };
   }
 
