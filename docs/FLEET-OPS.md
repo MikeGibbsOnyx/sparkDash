@@ -1,7 +1,8 @@
-# FLEET-OPS.md — Service Placement & Coexistence Plan (DRAFT v0.1)
+# FLEET-OPS.md — Service Placement & Coexistence Plan (DRAFT v0.2)
 
-**Owner:** Nyx · **Task:** t_09c66179 · **Date:** 2026-09-07
-**Upstream:** docs/FLEET-BRAIN.md (t_8ae76168, draft awaiting Mike's §6 signature) · docs/PAIR-EVAL.md (t_48c660f9, HOLD) · receipts/t_15e0a6b7-* (fabric recon)
+**Owner:** Nyx · **Task:** t_09c66179 (placement) · t_c6892171 (day-ops SKU map)
+**Date:** 2026-09-07
+**Upstream:** docs/FLEET-BRAIN.md (t_8ae76168 / t_631f607c v0.2) · docs/PAIR-EVAL.md (t_48c660f9, HOLD) · receipts/t_15e0a6b7-* (fabric recon) · receipts/t_c6892171-day-ops-sku-map-2026-09-07.md
 **Status: PLAN ONLY. Nothing in this doc authorizes an install, a port bind, a weight copy >scratch, or a config flip. Every "GO-pending" row needs Mike.**
 
 ---
@@ -15,7 +16,7 @@
 | **nyx-den** (spark head) | 100.85.158.16 | ~0 G | vLLM :8888 qwen3.8-flash-next (TP2 rank 0, GPU ~93%), Ollama :11434 | UP 192.168.50.10 / .60.10 | Nyx serving — **sacrosanct** |
 | **iris-den** | 100.67.41.50 | ~2 G | vLLM TP2 rank 1, Ollama, Comfy/Isaac historically | UP 192.168.50.11 / .60.11 | Iris serving + creative |
 | **rin-den** (spark-5598) | 100.79.61.0 | 76 G | idle | UP, no IPv4 | **spare capacity** |
-| **mike-den** (spark-13da) | 100.65.30.25 | 114 G | idle | UP, no IPv4 | **spare capacity** |
+| **mike-den** (spark-13da) | 100.65.30.25 | 114 G | SparklingKit v0.1.5 :54321 (healthy, endpoints unconfigured); GPU idle | UP, no IPv4 | **day-ops workbench (panel up, model stack not started)** |
 | **Mac Studio** | 100.125.180.48 | 36 G total | Hermes (nyx/iris), sparkDash :5555 prod, Obsidian | — | control plane only |
 | **thebeast** (Windows) | 100.125.236.77 | — | offline at probe time | — | creative render (when up) |
 
@@ -44,20 +45,43 @@ Fabric: 200G QSFP switch L1/L2 LIVE (LLDP reflection, 4 nodes × 2 ports up). Mi
 - **Families in scope:** LTX, PinkCherry, bigLust (creative); Qwen, DS4-Flash, GLM-exl3 (serving); gpt-oss-120b IQ4_XS (layer-split spike payload — nothing exists on disk yet, t_15e0a6b7 confirms).
 - **First action when GO'd:** rsync DS4-Flash FP8 + GLM exl3 off nyx-den into the store (frees ~320G on the serving box and gives the pair a verified copy), *after* manifest verification, never before.
 
-## 2. Sparkling Kit day-ops menu (transcription, OCR, diarization, STS)
+## 2. SparklingKit day-ops lane (SKU-mapped 2026-09-07, t_c6892171)
 
-**Placement rule of thumb:** steady-state daemons → ops box; bursty heavy one-shots → whichever box has free unified memory that hour; nothing day-ops touches nyx-den while qwen3.8 holds the GPU.
+**Do not invent a second daemon.** SparklingKit **is** the day-ops lane. A parallel whisper.cpp / pyannote / PaddleOCR / Tesseract stack on the same box would fight the GB10 unified-memory envelope and duplicate the workbench Mike already installed.
 
-| Capability | Engine (proposal) | Home | Offload path |
-|---|---|---|---|
-| Transcription | whisper.cpp (small→large-v3 tiered) / faster-whisper | **mike-den** daemon (114G avail, idle) | 10-min-plus files → rin-den |
-| Diarization | pyannote (HF gated: needs token — Mike-supplied, do not store in repo) | **mike-den**, same process lane as ASR | heavy multi-speaker → rin-den |
-| OCR | PaddleOCR or Tesseract-first (ponytail: stdlib-grade first, upgrade on evidence) | **Mac Studio** CLI (documents are already there, Obsidian lane) | book-scans/OCR-heavy PDFs → mike-den batch |
-| STS / embeddings | Qwen3-Embedding or bge-m3 via local engine | **rin-den** (pair with embed/batch slot from FLEET-BRAIN §5) | — |
-| STS ad-hoc | ollama `nomic-embed` class | Studio local :11434 | — |
+**Live (read-only probe, 2026-09-07 ~23:50 EDT, mike-den@100.65.30.25):**
+- Workbench: `~/sparklingkit/` compose `ghcr.io/stevibe/sparklingkit:0.1.5` + redis:8-alpine, **healthy 3 days**, bind `SPARKLINGKIT_BIND=100.65.30.25:54321` (tailnet-only; 127.0.0.1 does not answer — expected).
+- Health (via `docker exec sparklingkit-app-1 curl 127.0.0.1:54321/api/health`): `ok:true, version:v0.1.5`, Redis ok; **all six endpoints `enabled:false` / `Not configured`**.
+- Settings: `setup.completed=false`, `mode=custom` — onboarding wizard never applied. Jobs dir empty.
+- GPU idle (0%, 39°C). No ports 8330–8336. No `~/sparklingkit-dgx`. No whisper/pyannote/Paddle process.
+- HF token: unset in the mike-den shell; `~/.cache/huggingface/token` absent. Do not store tokens in the repo.
+- `~/sparklingkit/sparklingkit status` reports "Application health: unavailable" because it curls localhost; the app is healthy on the Tailscale bind. Don't treat that CLI line as down.
 
-**Ops box = mike-den.** It's the emptiest, least-claimed box, on the fabric, and nothing canonical lives on it yet. rin-den is deliberately kept clean as cold spare / layer-split spike node (t_15e0a6b7 plan) until the spike reports.
-**Gate:** Mike's Sparkling Kit scope list is not in this repo — menu above is capability-shaped, not SKU-shaped. Map real items when the list lands. Card: `d1-mic` (below).
+**SKU map (SparklingKit reference stack, github.com/stevibe/SparklingKit + docs/dgx-spark.md) vs what is on disk:**
+
+| Capability | Kit SKU / engine | Kit port | On mike-den disk now | Home | Notes |
+|---|---|---|---|---|---|
+| Transcription | `Qwen/Qwen3-ASR-1.7B` (vLLM + Qwen ASR) | 8333 | **YES** `~/models/asr/Qwen3-ASR-1.7B` 4.4G (safetensors present) | **mike-den** | Kit STT. Qwen3-ASR is LID+ASR, **not speaker diarization** (TEN-framework #2037). |
+| OCR | `baidu/Unlimited-OCR` (vLLM) | 8332 | **YES** `~/models/ocr/Unlimited-OCR` 6.4G | **mike-den** | Kit OCR. Documents already land in `~/sparklingkit/data/`. Studio Tesseract CLI is **not** the Kit path. |
+| Translation | `tencent/Hy-MT2-1.8B-FP8` | 8334 | **NO** | **mike-den** (when GO'd) | Kit module. Missing weight. |
+| Chat / mind-map LLM | `nvidia/Qwen3.6-35B-A3B-NVFP4` | 8331 | **NO** | **mike-den** (when GO'd) | Kit chat. Do not steal nyx-den's serving Qwen3.8. |
+| Visual grounding | `nvidia/LocateAnything-3B` | 8335 | **NO** | **mike-den** (when GO'd) | Research/non-commercial license — swap if commercial. |
+| Text-to-image | `Tongyi-MAI/Z-Image-Turbo` | 8336 | **NO** | **mike-den** (when GO'd) | Kit T2I. Creative *video* stays beast (§3). |
+| Embeddings / rerank (house extras, not Kit modules) | `Qwen3-Embedding-8B` 15G + `Qwen3-Reranker-8B` 16G | — | **YES** `~/models/llm/` | **rin-den** is still the planned *serving* embed slot (FLEET-BRAIN §5); weights currently sit on mike-den from the 09-04 cache | `qwen-emb` container Exited (0) 2 days ago — leftover slice job, not a daemon. |
+| Extra VLM on disk | Huihui-Qwen3-VL-8B-Instruct-abliterated 17G | — | **YES** `~/models/vlm/` | hold | Not a Kit SKU. Do not auto-wire. |
+| Diarization | **not a Kit SKU** | — | absent | **out of lane** | pyannote is a capability guess. Qwen3-ASR does not diarize. G8 retired from "token we need" to "explicit add-on, Mike GO". |
+| STS ad-hoc | ollama `nomic-embed` class | Studio :11434 | Studio | Studio | unchanged |
+
+**Ops box = mike-den.** The workbench is already there. rin-den stays the cold spare / layer-split spike node until that spike reports. Nothing day-ops touches nyx-den while qwen3.8 holds the GPU.
+
+**What "implement the daemon lane" actually means now (all GO-pending — third-party kit, diagnose-then-ASK):**
+1. Mike finishes the SparklingKit onboarding wizard (or GO's Nyx to apply endpoints). That is the model-stack start (`sparklingkit-dgx` / ports 8331–8336), not a house daemon we write.
+2. Missing Kit weights: Qwen3.6-35B-A3B-NVFP4, Hy-MT2-1.8B-FP8, LocateAnything-3B, Z-Image-Turbo. Copy-from-another-den before any `hf download` (nyx-den SSH timed out this pass — unproven).
+3. `HF_TOKEN` only if a gated pull needs it — Mike-supplied, never in repo. LocateAnything license review is a separate GO.
+4. Diarization is **not** in this lane unless Mike names it as an add-on after the Kit ASR is live.
+5. Do not start 833x, do not flip `enabled:true`, do not run the DGX installer, do not bind a new port. The panel is already the queue.
+
+**Hard rule:** SparklingKit is someone else's test kit on mike-den. Diagnosis is the job. Start/stop/edit `.env`/onboarding apply = Mike GO, one paragraph, blast radius named.
 
 ## 3. Creative lane contract
 
@@ -75,8 +99,8 @@ Fabric: 200G QSFP switch L1/L2 LIVE (LLDP reflection, 4 nodes × 2 ports up). Mi
 |---|---|---|
 | **nyx-den dies** | TP2 serving is dead (no fallback brain — FLEET-BRAIN §5 is explicit: persona mind stays cloud anyway). **Emergency seat: cloud (Grok lane), NOT the GLM box.** GLM-exl3 is a *challenger eval* with thin GB10 evidence — an emergency seat must be a known-good engine, and eval metal is not that. | manual; rin-den/mike-den can host a single-node DS4-Flash FP8 (156G ≤ 2×121G? no — single node can't) → single-node fallback tier is **DS4-Flash llama.cpp/DSpark ~20–26 t/s at Pair-B class quants** or gpt-oss-120b class, GO'd ad hoc by Mike |
 | **iris-den dies** | TP2 dead both ways (rank 1). Same cloud-first posture. Comfy/Isaac lane dies with it — creative jobs pause, queue holds. | as above |
-| **rin-den dies** | day-ops daemons restart on mike-den (stateless lanes; manifests are on mike-den mirror). Embed slot pauses. | trivial |
-| **mike-den dies** | ASR/diarization queue holds; rerun later. | trivial |
+| **rin-den dies** | SparklingKit stays on mike-den (it already lives there). Planned embed *serving* slot pauses. Store mirror (d1) is a separate path. | trivial |
+| **mike-den dies** | SparklingKit jobs hold in `~/sparklingkit/data/` (file-backed; Redis is operational only). Rerun later. No whisper/pyannote failover because those daemons were never the lane. | trivial |
 | **Studio dies** | Dashboard + Hermes control plane down; dens keep serving (they're autonomous). No lane dies. | sparkDash: `scripts/rollback.sh` (t_1054189c, proven) |
 | **beast dies / offline** | creative queue holds. | n/a |
 | **Fabric IPv4 missing** (today) | Nothing above depends on it except the layer-split spike. Serving pair uses existing 192.168.50/60. | one-line gate, Mike GO |
@@ -90,8 +114,8 @@ Fabric: 200G QSFP switch L1/L2 LIVE (LLDP reflection, 4 nodes × 2 ports up). Mi
 | nyx-den | ✓ dominant (qwen3.8, GPU ~93%) | ✗ | ✗ | serving owns the GPU; watchdogs + tailscale only |
 | iris-den | ✓ (TP1) | queued-only | Isaac: **cap ≤0.72 util when serving up** (FLEET-BRAIN §4 default) | creative renders queue behind KV; FLEET-BRAIN §6.3 (pure-serving vs co-tenant) is Mike's open check |
 | rin-den | embed slot (planned) | stills fallback (GO-pending) | **training/batch has priority here** (idle box) | batch jobs must yield to nothing today |
-| mike-den | layer-split spike host | ✗ | day-ops daemons (ASR/diar) | spike window > daemons; daemons are checkpoint-restartable |
-| Studio | ✗ never | ✗ | light OCR CLI only | control plane; 36G, prod dash |
+| mike-den | layer-split spike host | ✗ | SparklingKit model stack (8331–8336) when GO'd; panel already up | spike window > Kit inference; Kit jobs are file-backed and restartable. Do not co-start a second ASR/OCR daemon. |
+| Studio | ✗ never | ✗ | no Kit OCR (Unlimited-OCR is on mike-den); Studio stays control plane | 36G, prod dash. Ad-hoc nomic-embed on Studio :11434 only. |
 | beast | ✗ | ✓ owner when up | ✗ | sisters submit, never SSH-in-render |
 
 **Time-slicing rules:** (1) serving GPU is non-negotiable during a lane's hours — batch/checkpoint-restartable work only on shared boxes; (2) training on a serving co-tenant is hard-capped via util ceiling, not by convention — enforce with the watchdog, not good intentions; (3) one lane per spare box at a time (rin-den: batch OR spike OR stills); (4) nothing schedules across the fabric until IPv4 lands.
@@ -107,7 +131,7 @@ Fabric: 200G QSFP switch L1/L2 LIVE (LLDP reflection, 4 nodes × 2 ports up). Mi
 | G5 | **llama.cpp rpc-server build** | absent everywhere | t_15e0a6b7 spike (blocked on G4) |
 | G6 | **Render submission endpoint** | doesn't exist; PAIR can't host it | d3 build (GO-pending) |
 | G7 | **Beast reachability/ownership** | offline, Windows path unproven | Mike: power/remote policy call |
-| G8 | **pyannote HF token** | gated weights, no credential | Mike-supplied secret (never in repo) |
+| G8 | **Diarization add-on (pyannote or other)** | **not a SparklingKit SKU**; Qwen3-ASR-1.7B does not diarize | Explicit Mike GO after Kit ASR is live. Token never in repo. Not blocking the Kit lane. |
 | G9 | **Aug-13 interconnect postmortem** | failure mode unroot-caused; rin-den + mike-den stay out of TP until it lands | separate Mike decision (FLEET-BRAIN §6.4) |
 | G10 | **Backup regime for the store** | canon on one box = single copy again | mirror policy on mike-den + verification cron (d1 scope) |
 
@@ -120,10 +144,10 @@ Everything else named in §1–5 has a box. That's the MECE claim: 10 gaps, all 
 | Decision area | Card | State |
 |---|---|---|
 | D1 weights store + manifest + ingest | t_8f548a73 | spec locked, writes GO-pending |
-| D2 day-ops menu placement | t_c6892171 | spec locked, needs Sparkling Kit item list |
+| D2 day-ops menu placement | t_c6892171 | SKU-mapped 2026-09-07; SparklingKit IS the lane; model-stack start GO-pending |
 | D3 creative lane endpoint build | t_d59f20e5 | spec locked, build GO-pending |
 | D4 gateway restore | t_26d16dbb | prerequisite for §4, needs GO |
 | D5 coexistence caps enforcement | folded into watchdog scope (d1-adjacent) | needs iris-den FLEET-BRAIN §6.3 answer |
 | Doc drift (FLEET-BRAIN stale table) | t_631f607c | reconciled in FLEET-BRAIN v0.2 |
 
-**Open questions owned by Mike (not workers):** FLEET-BRAIN §6 four checkmarks, fabric sudo one-liner (G4), beast power policy (G7), Sparkling Kit scope list, pyannote token (G8).
+**Open questions owned by Mike (not workers):** FLEET-BRAIN §6 four checkmarks, fabric sudo one-liner (G4), beast power policy (G7), SparklingKit onboarding / model-stack GO (D2), LocateAnything license if grounding is in-scope, diarization add-on only if he wants it (G8, not blocking).
