@@ -1,0 +1,81 @@
+// Onyx Gateway: send one request upstream and stream the answer back, event by event.
+// Nothing is buffered on the way back and an open stream has no idle timeout.
+import { Agent, request } from "undici";
+import { inboundHeaders } from "./headers.js";
+
+export function createUpstreamAgent({ connectTimeoutMs, headersTimeoutMs }) {
+  return new Agent({
+    connect: { timeout: connectTimeoutMs, autoSelectFamily: true, autoSelectFamilyAttemptTimeout: 2000 },
+    headersTimeout: headersTimeoutMs,
+    bodyTimeout: 0,
+    keepAliveTimeout: 60_000,
+    // undici's request() never follows redirects: a 3xx goes back to the client as-is,
+    // so a provider key can't be carried to another host.
+  });
+}
+
+/**
+ * @param {object} p
+ * @param {import("node:http").ServerResponse} p.res      client response
+ * @param {import("node:http").IncomingMessage} p.req     client request (to notice a client hang-up)
+ * @param {string} p.url
+ * @param {Record<string, string>} p.headers
+ * @param {Buffer} p.body
+ * @param {Agent} p.agent
+ * @param {(status: number, message: string) => void} p.onConnectError  writes a client-format error
+ * @returns {Promise<{ status: number | null, ttfbMs: number | null, latencyMs: number, error: string | null, partial: boolean }>}
+ */
+export async function forward({ res, req, url, headers, body, agent, onConnectError }) {
+  const t0 = performance.now();
+  const ac = new AbortController();
+  const onClientGone = () => ac.abort();
+  req.on("close", () => {
+    if (!res.writableFinished) onClientGone();
+  });
+
+  let up;
+  try {
+    up = await request(url, { method: "POST", headers, body, dispatcher: agent, signal: ac.signal });
+  } catch (err) {
+    const code = err?.code || err?.cause?.code || err?.name || "error";
+    if (ac.signal.aborted) return { status: null, ttfbMs: null, latencyMs: performance.now() - t0, error: "client closed", partial: false };
+    const timeout = /Timeout/i.test(code);
+    onConnectError(timeout ? 504 : 502, timeout ? `The provider didn't answer in time (${code}).` : `The Gateway couldn't reach the provider (${code}).`);
+    return { status: timeout ? 504 : 502, ttfbMs: null, latencyMs: performance.now() - t0, error: code, partial: false };
+  }
+
+  const ttfbMs = performance.now() - t0;
+  res.socket?.setNoDelay(true);
+  res.writeHead(up.statusCode, inboundHeaders(up.headers));
+  res.flushHeaders();
+
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (error, partial) => {
+      if (done) return;
+      done = true;
+      resolve({ status: up.statusCode, ttfbMs, latencyMs: performance.now() - t0, error, partial });
+    };
+    up.body.on("data", (chunk) => {
+      // Write each chunk as it arrives; honour backpressure from a slow client.
+      if (!res.write(chunk)) {
+        up.body.pause();
+        res.once("drain", () => up.body.resume());
+      }
+    });
+    up.body.on("end", () => {
+      res.end();
+      finish(null, false);
+    });
+    up.body.on("error", (err) => {
+      // Mid-stream drop: end the client's stream the same way (abruptly) so it sees the failure.
+      const code = ac.signal.aborted ? "client closed" : err?.code || err?.message || "upstream error";
+      res.destroy();
+      finish(code, true);
+    });
+    res.on("close", () => {
+      if (!up.body.destroyed && !res.writableFinished) up.body.destroy();
+      finish(res.writableFinished ? null : "client closed", !res.writableFinished);
+    });
+  });
+}

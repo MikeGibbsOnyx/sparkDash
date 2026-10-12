@@ -1,0 +1,92 @@
+// Onyx Gateway: the only process that holds provider keys. Unprivileged, non-root.
+// Public listener: GATEWAY_BIND_HOST:GATEWAY_PORT (127.0.0.1:5556). Internal API: ipc/gateway.sock.
+import crypto from "node:crypto";
+import dns from "node:dns";
+import fs from "node:fs";
+import http from "node:http";
+import net from "node:net";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+import { createWhois } from "../shared/identity/index.js";
+import { loadConfig } from "./config.js";
+import { openGatewayDb } from "./store/db.js";
+import { State } from "./store/state.js";
+import { createVault, loadVaultKey } from "./credentials/vault.js";
+import { GatewayKeys } from "./credentials/gatewayKeys.js";
+import { Providers } from "./providers/registry.js";
+import { Grants } from "./policy/grants.js";
+import { createUpstreamAgent } from "./proxy/forward.js";
+import { createPublicHandler } from "./app.js";
+import { createInternalHandler } from "./internal/server.js";
+
+// Sparks often resolve providers' AAAA records with no IPv6 route, and Node's default 250 ms
+// per-address attempt cancels a slower IPv4 connect (found in the spike). Prefer IPv4, allow 2 s.
+dns.setDefaultResultOrder("ipv4first");
+net.setDefaultAutoSelectFamilyAttemptTimeout(2000);
+
+/** Build the Gateway's parts without listening (tests use this directly). */
+export function createGateway(config, opts = {}) {
+  fs.mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
+  const db = openGatewayDb(config.dataDir);
+  const state = new State(db);
+  const vault = createVault(loadVaultKey(config));
+  const keys = new GatewayKeys(db, { audit: state.audit });
+  const providers = new Providers(db, { vault, audit: state.audit, envKeys: config.envProviderKeys, fetchImpl: opts.fetchImpl, checkUrl: opts.checkUrl });
+  const grants = new Grants(db, { audit: state.audit });
+  const whois = opts.whois || createWhois({ socketPath: config.tailscaledSocket, cli: null });
+  const agent = createUpstreamAgent(config);
+  const version = JSON.parse(fs.readFileSync(path.join(config.root, "package.json"), "utf8")).version;
+  const publicHandler = createPublicHandler({ config, state, providers, grants, keys, whois, agent, log: opts.log });
+  return { db, state, providers, grants, keys, agent, version, publicHandler };
+}
+
+/** Create the internal socket and its secret (0600), readable by the Observer. */
+function listenInternal(config, handler) {
+  fs.mkdirSync(config.ipcDir, { recursive: true });
+  let secret;
+  try {
+    secret = fs.readFileSync(config.secretPath, "utf8").trim();
+  } catch {
+    secret = "";
+  }
+  if (!/^[0-9a-f]{64}$/.test(secret)) {
+    secret = crypto.randomBytes(32).toString("hex");
+    fs.writeFileSync(config.secretPath, secret + "\n", { mode: 0o600 });
+  }
+  try {
+    fs.unlinkSync(config.socketPath);
+  } catch {
+    /* no stale socket */
+  }
+  const server = http.createServer(handler(secret));
+  server.listen(config.socketPath, () => fs.chmodSync(config.socketPath, 0o600));
+  return server;
+}
+
+export async function main(env = process.env) {
+  let config;
+  try {
+    config = loadConfig(env);
+  } catch (err) {
+    console.error(`[gateway] ${err.message}`);
+    process.exit(1);
+  }
+  if (config.bindClass === "public") {
+    console.warn(`[gateway] WARNING: listening on the public address ${config.bindHost} (GATEWAY_ALLOW_PUBLIC_BIND=1). Anyone who can reach it can try your gateway keys.`);
+  }
+  const gw = createGateway(config);
+  await gw.providers.syncEnvProviders();
+  const pub = http.createServer({ noDelay: true, requestTimeout: 0, headersTimeout: 60_000, keepAliveTimeout: 65_000 }, gw.publicHandler);
+  pub.listen(config.port, config.bindHost, () => console.log(`[gateway] listening on http://${config.bindHost}:${config.port} (sparkDash ${gw.version})`));
+  listenInternal(config, (secret) => createInternalHandler({ secret, state: gw.state, providers: gw.providers, grants: gw.grants, keys: gw.keys, config, version: gw.version }));
+  console.log(`[gateway] internal API on ${config.socketPath}; gateway ${gw.state.enabled ? "on" : "off (turn it on from the AI Gateway page)"}`);
+  const stop = () => {
+    pub.close();
+    gw.db.close();
+    process.exit(0);
+  };
+  process.on("SIGTERM", stop);
+  process.on("SIGINT", stop);
+}
+
+if (import.meta.url === pathToFileURL(process.argv[1] || "").href) main();
