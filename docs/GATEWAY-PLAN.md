@@ -449,13 +449,13 @@ Five phases, in order. Each ends with its acceptance criteria met, tests green (
 
 ### Phase 1: People and roles
 
-- [ ] Add `better-sqlite3`, `config/sparkdash.db`, migration runner
-- [ ] `shared/identity/`: Serve headers, whois via LocalAPI socket (CLI fallback), local console, refusal rules, 60-second cache
-- [ ] Directory: people, groups, roles; default role; claim codes
-- [ ] Minimum role on every existing dashboard route; WebSocket upgrade checks role
-- [ ] People page; signed-in header; Settings additions
-- [ ] Member redirect placeholder (Connect page arrives in Phase 2)
-- [ ] Tests: each resolution path, Funnel refusal, role matrix for every route, claim code single use and expiry
+- [x] Add `better-sqlite3`, `config/sparkdash.db`, migration runner
+- [x] `shared/identity/`: Serve headers, whois via LocalAPI socket (CLI fallback), local console, refusal rules, 60-second cache
+- [x] Directory: people, groups, roles; default role; claim codes
+- [x] Minimum role on every existing dashboard route; WebSocket upgrade checks role
+- [x] People page; signed-in header; Settings additions
+- [x] Member redirect placeholder (Connect page arrives in Phase 2)
+- [x] Tests: each resolution path, Funnel refusal, role matrix for every route, claim code single use and expiry
 
 **Done when:** a teammate opening the dashboard through Serve is a Member and sees no fleet pages; an Owner promotes them to Admin and they see everything; the local console still has full access.
 
