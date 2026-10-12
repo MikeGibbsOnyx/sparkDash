@@ -83,6 +83,13 @@ First match wins:
 
 Whois results are cached 60 seconds per IP and port. `SPARKDASH_TOKEN` remains for scripts and Prometheus and acts as Admin.
 
+Other front doors (decided 2026-10-11, Michael):
+
+- **Reverse proxy:** a loopback request whose `X-Forwarded-For` is not a tailnet IP is refused with a `401` that names the fix (Tailscale Serve, or send `SPARKDASH_TOKEN`). Existing reverse-proxy installs use the token; the CHANGELOG lists this as a breaking change and `docs/REMOTE-ACCESS.md` says a proxy must set `X-Forwarded-For`.
+- **`SPARKDASH_LOCAL_CONSOLE=0`** turns off local-console Owner, for installs behind a proxy that does not set `X-Forwarded-For` (which would otherwise look like the local console). Default `1`.
+- **SSH tunnel:** stays local console (Owner); anyone who can open one already has a shell on the host.
+- **Not in Phase 1:** a trusted identity header from an identity-aware proxy (`Remote-User` style). Add later if a customer needs it.
+
 ### Roles
 
 | Role | Can |
@@ -172,6 +179,8 @@ The Gateway serves three API formats, sends each request to the provider that se
 | `GET /` and assets | Connect page |
 
 Bodies are read raw, up to 32 MB (`GATEWAY_MAX_BODY_MB`).
+
+Outbound connections prefer IPv4 and allow 2 seconds per address (`dns.setDefaultResultOrder("ipv4first")`, `net.setDefaultAutoSelectFamilyAttemptTimeout(2000)`). Found in the spike: Sparks resolve providers' AAAA records with no IPv6 route, and Node 22's default 250 ms per-address attempt cancelled rin-den's ~300 ms IPv4 connect to Anthropic, so every `fetch` failed with `ETIMEDOUT`.
 
 ### Model resolution
 
@@ -498,11 +507,19 @@ Five phases, in order. Each ends with its acceptance criteria met, tests green (
 
 Answer these on a real Spark and tailnet at the start of Phase 1, and record each result in this file. A "no" changes the noted part of the plan.
 
-- [ ] Does Tailscale Serve set `X-Forwarded-For` to the caller's tailnet IP? If no, tagged devices use gateway keys only.
-- [ ] Can a non-root process with the host's `tailscaled.sock` mounted read-only call LocalAPI whois? If no, give the Gateway's user Tailscale operator rights (`tailscale set --operator`).
-- [ ] Can the Observer run `tailscale serve` through the host namespace? If no, Publish shows the command to copy.
-- [ ] Does `better-sqlite3` build and run in the arm64 image?
-- [ ] Exact base URLs and key handling for Codex, OpenCode and Gemini CLI at their current versions.
+- [x] Does Tailscale Serve set `X-Forwarded-For` to the caller's tailnet IP? If no, tagged devices use gateway keys only.
+  **Yes.** Request from mike-den to `https://rin-den…:8443` arrived from TCP peer `127.0.0.1` with `X-Forwarded-For: 100.65.30.25` (mike-den), plus `Tailscale-User-Login`, `Tailscale-User-Name`, `Tailscale-User-Profile-Pic`, `Tailscale-Headers-Info`, `X-Forwarded-Host`, `X-Forwarded-Proto: https`. Not yet tested from a tagged device (the tailnet has none); whois covers that path.
+- [x] Can a non-root process with the host's `tailscaled.sock` mounted read-only call LocalAPI whois? If no, give the Gateway's user Tailscale operator rights (`tailscale set --operator`).
+  **Yes.** Container as uid 65534, `--read-only`, `--cap-drop ALL`, socket mounted `:ro`: `GET /localapi/v0/whois?addr=100.65.30.25:1` returned 200 with `UserProfile.LoginName` and `Node.Name`. Depends on the host socket's default mode 0666; the Gateway's health check reports it if a host has tightened it.
+- [x] Can the Observer run `tailscale serve` through the host namespace? If no, Publish shows the command to copy.
+  **Yes.** From a privileged, `pid: host` container, `nsenter --mount=/host/proc/1/ns/mnt -- tailscale serve --bg --https=8444 …` published, `serve status` listed it as "(tailnet only)", and `--https=8444 off` removed it. Same mechanism as the existing `TailscaleProbe`.
+- [x] Does `better-sqlite3` build and run in the arm64 image?
+  **Yes.** `better-sqlite3@12.11.1` installs from its prebuilt binary in the existing Dockerfile (no Dockerfile change); in the built image, as uid 65534 with `--read-only`, it opened a file in WAL mode and wrote and read a row (SQLite 3.53.2, arm64). Add it with a normal `npm install`: `npm i --package-lock-only` drops other platforms' optional bindings (npm/cli#4828) and breaks the Tailwind build.
+- [x] Exact base URLs and key handling for Codex, OpenCode and Gemini CLI at their current versions.
+  Captured against a local recorder on 2026-10-11:
+  - **Codex 0.162.1:** `base_url` must include `/v1`; sends `POST /v1/responses` with `Authorization: Bearer <env_key value>`. Session and turn IDs arrive in the `x-codex-turn-metadata` JSON header (use for the session view). Snippet adds `request_max_retries = 0` only for testing; omit in the published snippet.
+  - **OpenCode 1.19.0:** provider block in `~/.config/opencode/opencode.json` with `"npm": "@ai-sdk/openai-compatible"`, `options.baseURL` = `https://…:8443/v1`, `options.apiKey` = `sparkdash`; sends `POST /v1/chat/completions` with `Authorization: Bearer`, plus `x-opencode-session-id`.
+  - **Gemini CLI 0.63.0:** `GOOGLE_GEMINI_BASE_URL` is the bare origin (no `/v1beta`); sends `x-goog-api-key`; calls `…:generateContent` and `…:streamGenerateContent?alt=sse` (query string must be forwarded). Headless use also needs `~/.gemini/settings.json` `{"security":{"auth":{"selectedType":"gemini-api-key"}}}`, or it exits with "Invalid auth method selected". It also calls a utility model (`gemini-3.5-flash-lite`) besides the chosen one, so grants for Gemini users must cover it or the CLI fails.
 - [ ] Which providers reject a conversation after a tool definition is removed (decides strip versus block per provider).
 - [ ] Baseline time to first byte for Claude Code direct to Anthropic, for the Phase 2 comparison.
 
