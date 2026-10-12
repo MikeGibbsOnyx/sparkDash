@@ -461,18 +461,27 @@ Five phases, in order. Each ends with its acceptance criteria met, tests green (
 
 ### Phase 2: Gateway core
 
-- [ ] `gateway/` service, second Compose service with the hardening above, `gateway-data` and `ipc` volumes
-- [ ] Internal API over the socket; directory and inventory push from the Observer
-- [ ] Provider keys: detect, Test and save, write-only, replace, remove with impact, environment-variable keys
-- [ ] Local servers from inventory with **Serve through the gateway**
-- [ ] Proxy: Anthropic, OpenAI (Chat, Responses, Completions, Embeddings), Gemini; `/v1/models`; `/api/hello`; own login; forwarding rules
-- [ ] Gateway keys: create (reveal once with snippet), list, revoke, expiry warning
-- [ ] Default grant; grant check (editor comes in Phase 3)
-- [ ] Connect page with snippets and live first-request line; Publish on your tailnet
-- [ ] AI Gateway page: first-run card, Overview and Models tabs
-- [ ] Tests: fake upstreams for each format (recorded SSE with pings, errors, mid-stream drop); byte-identical streaming; header policy; no-secret grep; encryption round trip
+- [x] `gateway/` service, second Compose service with the hardening above, `gateway-data` and `ipc` volumes
+- [x] Internal API over the socket; directory and inventory push from the Observer
+- [x] Provider keys: detect, Test and save, write-only, replace, remove with impact, environment-variable keys
+- [x] Local servers from inventory with **Serve through the gateway**
+- [x] Proxy: Anthropic, OpenAI (Chat, Responses, Completions, Embeddings), Gemini; `/v1/models`; `/api/hello`; own login; forwarding rules
+- [x] Gateway keys: create (reveal once with snippet), list, revoke, expiry warning
+- [x] Default grant; grant check (editor comes in Phase 3)
+- [x] Connect page with snippets and live first-request line; Publish on your tailnet
+- [x] AI Gateway page: first-run card, Overview and Models tabs
+- [x] Tests: fake upstreams for each format (recorded SSE with pings, errors, mid-stream drop); byte-identical streaming; header policy; no-secret grep; encryption round trip
 
 **Done when:** Claude Code (own subscription and company key, with extended thinking, a subagent and `/compact`), Codex, Gemini CLI and OpenCode against a local model all work through the Gateway; added time to first byte is under 5 ms.
+
+Acceptance on rin-den (2026-10-12), Gateway container as in docker-compose.yml (uid 1000, read-only, no capabilities), env provider keys, published with Tailscale Serve on :8443, clients run from a Mac on the tailnet with the Connect page's own snippets:
+
+- [x] Claude Code 2.1.296, company key (`ANTHROPIC_AUTH_TOKEN=sparkdash` in settings.json): plain reply, extended thinking (thinking blocks returned), a subagent (its requests carry their own agent ID) and `/compact`. All requests 200, identified by Tailscale as the person and device.
+- [ ] Claude Code, own subscription: Anthropic's own-login switch is on; needs a person signed in to Claude to run it.
+- [x] Codex 0.162.1 (Responses API), Gemini CLI 0.63.0 (native Gemini) and OpenCode 1.19.0 (Chat Completions) all answered. OpenCode with `gpt-5-mini` gets OpenAI's own 400 (`max_tokens` unsupported; the Gateway passes bodies unchanged), so cloud models for OpenCode need one that accepts `max_tokens`, such as `gpt-4.1-mini`.
+- [ ] OpenCode against a local model: no local model server with a model loaded on the tailnet yet (mike-den's Ollama is empty).
+- [x] Added time to first byte: **0.73 ms p50, 1.19 ms p90** on the Spark against a local upstream (`gateway/bench/overhead.mjs`, 300 requests). Against Anthropic itself the difference is lost in its ±60 ms jitter: direct p50 595 ms, through the Gateway 591 ms.
+- Note: a Claude Code process that already has `ANTHROPIC_BASE_URL` in its environment (for example one started from another Claude tool) ignores the settings.json `env` block. The Connect page's snippet is right for a normal terminal.
 
 ### Phase 3: Usage, cost and budgets
 

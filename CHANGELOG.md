@@ -15,7 +15,12 @@ Format: version sections are listed newest first.
 - **A minimum role on every route.** Reads need Auditor, changes need Admin, Owner claim codes need Owner; the WebSocket needs Auditor. Members see a Connect page placeholder instead of the fleet (the Connect page arrives with the AI Gateway).
 - **Owner claim codes.** With no Owner yet, sparkDash prints a one-time code at startup (single use, 24 hours); the first person to enter it through Tailscale Serve becomes Owner. Owners can create more in Settings.
 - **`SPARKDASH_LOCAL_CONSOLE=0`** turns off local-console Owner rights, for installs behind a reverse proxy that doesn't set `X-Forwarded-For`.
-- New `config/sparkdash.db` (SQLite) holds people, groups, claim codes and the audit trail.
+- New `config/sparkdash.db` (SQLite) holds people, groups, claim codes and the audit trail; the Gateway keeps its own `gateway.db` in the `gateway-data` volume, which the dashboard never mounts.
+
+- **AI Gateway.** A second, unprivileged service (`gateway`, from the same image) gives every AI tool one address on your tailnet: Claude Code, Claude Desktop, Codex, Gemini CLI, OpenCode and anything OpenAI-compatible. Provider keys for Anthropic, OpenAI, Gemini and OpenRouter live only in the Gateway, encrypted; laptops hold none. Tailscale identifies each person, so nobody needs a key on the tailnet; **gateway keys** (shown once, hashed, 90-day expiry by default) cover CI runners and tagged servers. Local model servers sparkDash already watches can be served as `<machine>/<model>` with one switch. Requests stream through unbuffered and unchanged except for credentials (Anthropic's gateway rules); a model name maps to exactly one provider. People can keep using their own Claude subscription through it when an Admin turns that on.
+- **AI Gateway page** (`/gateway`): a three-step first-run card, then Overview, Models (paste a key, Test and save, write-only key cards, Replace, Remove with impact, local servers, model switches) and Access (grants, gateway keys). **Publish on your tailnet** runs `tailscale serve` on :8443 and warns about Funnel.
+- **Connect page** (the Gateway's address): pick your tool, copy one block, and watch "Connected: Claude Code, claude-…, 3 seconds ago" appear; personal gateway keys for tools off the tailnet.
+- Gateway activity (keys added, replaced or revoked, the gateway turned on or paused) appears in Activity.
 
 ### Changed (Onyx build) — breaking
 - **People reaching sparkDash through Tailscale Serve are Members until promoted.** Before, anyone who could reach a loopback-bound dashboard read everything. The local console keeps full access; promote your team on the People page.
