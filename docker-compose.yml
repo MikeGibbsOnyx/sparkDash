@@ -1,3 +1,4 @@
+# Modified by Onyx AI Labs, 2026: mounts shared/ for access control.
 services:
   sparkdash:
     build:
@@ -27,6 +28,8 @@ services:
     volumes:
       # Live server code — edits apply after --watch reloads the process
       - ./server:/app/server
+      # Onyx: identity and SQLite helpers shared with the Gateway
+      - ./shared:/app/shared:ro
       # Prompt catalog imported by DecodeBench / Showcase (not under ./server)
       - ./src/shared:/app/src/shared:ro
       - ./src/components/ShowcasePage/showcasePrompts.ts:/app/src/components/ShowcasePage/showcasePrompts.ts:ro

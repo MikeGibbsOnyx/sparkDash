@@ -1,9 +1,11 @@
+// Modified by Onyx AI Labs, 2026: People and access settings.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { isValidTimeZone, listTimeZones } from "../shared/timeZone";
 import { fetchSettings, updateSettings } from "../api/client";
 import { clearToken, getToken, onTokenChange, requestTokenPrompt } from "../api/authToken";
 import type { Settings } from "../api/types";
 import { useModalPresence } from "../hooks/useModalPresence";
+import { AccessSettings } from "./PeoplePage/AccessSettings"; // Onyx
 import packageJson from "../../package.json";
 import { XIcon } from "./ui/icons";
 import "../styles/dialogs.css";
@@ -427,6 +429,9 @@ export function SettingsDialog({ open, onClose, onSaved }: SettingsDialogProps) 
               />
             </>
           )}
+
+          {/* Onyx: default role and Owner claim codes (Admins and Owners). */}
+          <AccessSettings />
 
           {/* Outside the settings block: a rejected token is exactly when settings fail to load. */}
           <SettingRow

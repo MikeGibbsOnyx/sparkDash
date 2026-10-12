@@ -1,3 +1,4 @@
+// Modified by Onyx AI Labs, 2026: People page and access control wiring.
 import { BenchIcon } from "../bench/BenchIcon";
 import { useEffect, useMemo, useState, type MouseEvent } from "react";
 import {
@@ -18,7 +19,8 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import type { AuthMode, SparkSnapshot } from "../../api/types";
-import { ACTIVITY_ID, ENERGY_ID, OVERVIEW_ID, SHOWCASE_ID, TOKENS_ID, benchId, idToPath } from "../../constants";
+import { ACTIVITY_ID, ENERGY_ID, OVERVIEW_ID, PEOPLE_ID, SHOWCASE_ID, TOKENS_ID, benchId, idToPath } from "../../constants";
+import { PeopleIcon, SignedInChip } from "../PeoplePage/SignedInChip"; // Onyx
 import { BENCH_TYPES } from "../bench/benchCatalog";
 import { BoltIcon, ChevronDownIcon, GearIcon, GithubIcon, GlobeIcon, GridIcon, ListIcon, PanelLeftIcon, PlusIcon, SearchIcon, TerminalIcon, TokensIcon, XLogoIcon } from "../ui/icons";
 import { OpenAccessChip } from "../OpenAccessChip";
@@ -315,6 +317,15 @@ export function AppSidebar({
             <span className="rail-item__name">Token totals</span>
           </a>
           <a
+            href={idToPath(PEOPLE_ID)}
+            className={`rail-item ${activeId === PEOPLE_ID ? "is-active" : ""}`}
+            onClick={inApp(() => onSelect(PEOPLE_ID))}
+            aria-current={activeId === PEOPLE_ID ? "page" : undefined}
+          >
+            <PeopleIcon className="h-4 w-4" />
+            <span className="rail-item__name">People</span>
+          </a>
+          <a
             href={idToPath(ENERGY_ID)}
             className={`rail-item ${activeId === ENERGY_ID ? "is-active" : ""}`}
             onClick={inApp(() => onSelect(ENERGY_ID))}
@@ -390,6 +401,7 @@ export function AppSidebar({
           <span>{connected ? `Live${refreshInterval ? ` · ${Math.round(refreshInterval / 100) / 10} s poll` : ""}` : "Reconnecting…"}</span>
         </div>
         <OpenAccessChip authMode={authMode} />
+        <SignedInChip />
         <div className="rail-credit">
           <span>by Mia&apos;s AI Lab</span>
           <span className="rail-credit__links">

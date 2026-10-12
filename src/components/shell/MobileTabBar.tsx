@@ -1,10 +1,12 @@
+// Modified by Onyx AI Labs, 2026: People page and access control wiring.
 import { BenchIcon } from "../bench/BenchIcon";
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useFocusTrap } from "../../hooks/useFocusTrap";
 import { useInertBackground } from "../../hooks/useInertBackground";
 import type { SparkSnapshot } from "../../api/types";
-import { ACTIVITY_ID, ENERGY_ID, OVERVIEW_ID, SHOWCASE_ID, TOKENS_ID, benchId, benchTypeOf, isPageId } from "../../constants";
+import { ACTIVITY_ID, ENERGY_ID, OVERVIEW_ID, PEOPLE_ID, SHOWCASE_ID, TOKENS_ID, benchId, benchTypeOf, isPageId } from "../../constants";
+import { PeopleIcon, SignedInChip } from "../PeoplePage/SignedInChip"; // Onyx
 import { BENCH_TYPES } from "../bench/benchCatalog";
 import { BoltIcon, ChartIcon, GearIcon, GridIcon, ListIcon, PlusIcon, ServerIcon, TerminalIcon, TokensIcon } from "../ui/icons";
 import { isThrottling, railSubLabel } from "./sparkSummary";
@@ -60,7 +62,7 @@ export function MobileTabBar({ sparks, activeId, onSelect, onAdd, onOpenSettings
     return () => document.removeEventListener("keydown", onKey);
   }, [sheet]);
   // Which tab the sliding highlight sits under (-1 hides it, e.g. while on a Settings dialog).
-  const statsActive = activeId === TOKENS_ID || activeId === ENERGY_ID || activeId === ACTIVITY_ID;
+  const statsActive = activeId === TOKENS_ID || activeId === ENERGY_ID || activeId === ACTIVITY_ID || activeId === PEOPLE_ID;
   const tabIndex =
     sheetKind === "sparks" ? 1 : sheetKind === "stats" ? 2 : activeId === OVERVIEW_ID ? 0 : onSpark ? 1 : statsActive ? 2 : -1;
   const pageButton = (id: string, label: string, icon: ReactNode, compact = false) => (
@@ -91,7 +93,7 @@ export function MobileTabBar({ sparks, activeId, onSelect, onAdd, onOpenSettings
         <button
           type="button"
           className={tabIndex === 2 ? "is-active" : ""}
-          aria-current={activeId === TOKENS_ID || activeId === ENERGY_ID || activeId === ACTIVITY_ID ? "page" : undefined}
+          aria-current={statsActive ? "page" : undefined}
           onClick={() => openSheet("stats")}
           aria-haspopup="dialog"
         >
@@ -114,11 +116,15 @@ export function MobileTabBar({ sparks, activeId, onSelect, onAdd, onOpenSettings
               <div ref={trapRef} className={`sheet ${leaving ? "is-leaving" : ""}`} role="dialog" aria-modal="true" aria-label={sheetKind === "stats" ? "Stats" : "Choose a Spark"}>
                 <div className="rail-list">
                   {sheetKind === "stats" ? (
-                    ([
+                    <>
+                    {([
                       [TOKENS_ID, "Token totals", <TokensIcon key="t" className="h-4 w-4" />],
+                      [PEOPLE_ID, "People", <PeopleIcon key="p" className="h-4 w-4" />],
                       [ENERGY_ID, "Fleet energy", <BoltIcon key="e" className="h-4 w-4" />],
                       [ACTIVITY_ID, "Activity", <ListIcon key="a" className="h-4 w-4" />],
-                    ] as const).map(([id, label, icon]) => pageButton(id, label, icon))
+                    ] as const).map(([id, label, icon]) => pageButton(id, label, icon))}
+                    <SignedInChip />
+                    </>
                   ) : (
                     <>
                   <div className="rail-label rail-label--spaced">

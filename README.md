@@ -1,3 +1,4 @@
+<!-- Modified by Onyx AI Labs, 2026: People and roles section. -->
 # sparkDash ⚡ — Multi-unit monitoring dashboard for NVIDIA DGX Spark
 
 <p align="center">
@@ -321,6 +322,24 @@ Notes:
 - Snap installs run Tailscale as root; if the plain command reports *Access denied*, use `sudo tailscale serve …`.
 
 ---
+
+## People and roles (Onyx build)
+
+Tailscale says who each person is; sparkDash decides what they can do.
+
+| Role | Can |
+| --- | --- |
+| **Owner** | Everything, including making other Owners |
+| **Admin** | Everything except managing Owners |
+| **Auditor** | Read everything; change nothing |
+| **Member** | The Connect page only; no fleet pages |
+
+- Open sparkDash through [Tailscale Serve](#tailscale-serve-https). The first time someone opens it they appear on the **People** page with the default role, **Member** (change the default in Settings). Promote them there.
+- The local console (a browser on the sparkDash machine, or an SSH tunnel) has Owner rights. Set `SPARKDASH_LOCAL_CONSOLE=0` to turn that off, for example behind a reverse proxy that doesn't set `X-Forwarded-For`.
+- No Owner yet? sparkDash prints a one-time **claim code** in its log at startup. Enter it through Serve to become Owner. Owners can make more in Settings.
+- `SPARKDASH_TOKEN` keeps working for scripts and Prometheus and acts as Admin.
+- Requests sparkDash can't identify (Tailscale Funnel, a reverse proxy forwarding a non-tailnet address, a LAN client on a non-loopback bind) get a `401` that says what to do.
+- People, groups, claim codes and the audit trail live in `config/sparkdash.db`.
 
 ## Mobile PWA (install on a phone)
 

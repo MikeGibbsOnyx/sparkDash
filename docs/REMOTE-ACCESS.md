@@ -1,3 +1,4 @@
+<!-- Modified by Onyx AI Labs, 2026: identity and roles. -->
 # Remote access
 
 sparkDash includes administrative actions such as credential changes, benchmarks, updates, and power controls. Its application API does not authenticate direct clients in this release, so the server binds to `127.0.0.1` and refuses non-loopback startup.
@@ -30,6 +31,16 @@ The front door must proxy both `/api/*` and `/ws`, preserve WebSocket upgrades, 
 Tailscale Serve needs nothing more. Behind a reverse proxy on a custom domain, list that domain in `SPARKDASH_ALLOWED_HOSTS` (comma-separated); a loopback bind refuses other sites and names it does not recognise, and the refusal page says which name to add.
 
 Direct `BIND_HOST=0.0.0.0` requires `SPARKDASH_TOKEN`. Without a token, remote bind fails closed for mutations and WebSocket telemetry. A firewall-only or “trusted LAN” deployment is not a supported substitute.
+
+## Identity and roles (Onyx build)
+
+Behind Tailscale Serve, sparkDash reads the person from Serve's identity headers and gives them a role (see the README's *People and roles*). New people are Members, who see no fleet pages, until an Owner or Admin promotes them on the People page.
+
+A request sparkDash can't identify is refused with a `401` naming the fix:
+
+- **A reverse proxy** must set `X-Forwarded-For`. sparkDash can't tell who a forwarded non-tailnet address is, so those requests need `SPARKDASH_TOKEN` (acts as Admin). If your proxy doesn't set `X-Forwarded-For`, its requests look like the local console: set `SPARKDASH_LOCAL_CONSOLE=0`.
+- **Tailscale Funnel** traffic (a forwarded public address) is always refused.
+- **An SSH tunnel** is the local console and has Owner rights; anyone who can open one already has a shell on the host.
 
 ## Existing Docker installations
 

@@ -1,3 +1,4 @@
+// Modified by Onyx AI Labs, 2026: People page and access control wiring.
 /** Reserved tab id for the cross-Spark overview (not a real Spark). */
 export const OVERVIEW_ID = "__overview__";
 /** Reserved ids for the dedicated fleet pages. */
@@ -5,6 +6,8 @@ export const TOKENS_ID = "__tokens__";
 export const ENERGY_ID = "__energy__";
 export const ACTIVITY_ID = "__activity__";
 export const SHOWCASE_ID = "__showcase__";
+/** Onyx: People and roles. */
+export const PEOPLE_ID = "__people__";
 /** Benchmark pages: the active id is this prefix + the benchmark type (decode, tool-eval, …). */
 export const BENCH_PREFIX = "__bench__:";
 
@@ -14,6 +17,7 @@ const FIXED_PATHS: Record<string, string> = {
   [ENERGY_ID]: "/energy",
   [ACTIVITY_ID]: "/activity",
   [SHOWCASE_ID]: "/showcase",
+  [PEOPLE_ID]: "/people",
 };
 
 export function benchId(type: string): string {
