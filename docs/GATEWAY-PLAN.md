@@ -479,7 +479,7 @@ Acceptance on rin-den (2026-10-12), Gateway container as in docker-compose.yml (
 - [x] Claude Code 2.1.296, company key (`ANTHROPIC_AUTH_TOKEN=sparkdash` in settings.json): plain reply, extended thinking (thinking blocks returned), a subagent (its requests carry their own agent ID) and `/compact`. All requests 200, identified by Tailscale as the person and device.
 - [ ] Claude Code, own subscription: Anthropic's own-login switch is on; needs a person signed in to Claude to run it.
 - [x] Codex 0.162.1 (Responses API), Gemini CLI 0.63.0 (native Gemini) and OpenCode 1.19.0 (Chat Completions) all answered. OpenCode with `gpt-5-mini` gets OpenAI's own 400 (`max_tokens` unsupported; the Gateway passes bodies unchanged), so cloud models for OpenCode need one that accepts `max_tokens`, such as `gpt-4.1-mini`.
-- [ ] OpenCode against a local model: no local model server with a model loaded on the tailnet yet (mike-den's Ollama is empty).
+- [x] OpenCode against a local model: `iris-den/GLM-5.3-Flash-EXL3` (GLM 5.3 Flash on EXL3 across iris-den and nyx-den, served from iris-den:8888) through **Serve through the gateway**; the Gateway rewrote the model name for the server, two requests, both 200, cost basis local.
 - [x] Added time to first byte: **0.73 ms p50, 1.19 ms p90** on the Spark against a local upstream (`gateway/bench/overhead.mjs`, 300 requests). Against Anthropic itself the difference is lost in its ±60 ms jitter: direct p50 595 ms, through the Gateway 591 ms.
 - Note: a Claude Code process that already has `ANTHROPIC_BASE_URL` in its environment (for example one started from another Claude tool) ignores the settings.json `env` block. The Connect page's snippet is right for a normal terminal.
 
