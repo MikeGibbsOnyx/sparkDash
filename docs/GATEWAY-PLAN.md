@@ -306,7 +306,7 @@ Run before the request leaves the machine. Each detector is **Off**, **Flag** (r
 - Built-in detectors: email, phone, payment card (Luhn), US SSN, Canadian SIN (Luhn), secrets (AWS keys, GitHub and Slack tokens, private key blocks, `sk-` keys). Admins add regex detectors.
 - Scanned: message and system text, tool results. Skipped: thinking blocks and signatures, encrypted reasoning, base64 media, IDs, model names, tool schemas.
 - Redaction is deterministic within a conversation, so each turn's history matches the last; the UI notes it may affect Claude's extended thinking and recommends Flag or Block for coding agents.
-- Tool blocking: listed tool names (patterns allowed) are removed from requests. Providers that reject a conversation after a tool is removed get Block instead (decided in the spike).
+- Tool blocking: listed tool names (patterns allowed) are removed from requests. The spike found no provider rejects a conversation after a tool is removed, so removal is used everywhere. Gemini 3.x function-call parts carry a `thought_signature` that must reach the provider unchanged (a missing one is a `400`); the scanner never edits those parts.
 - Hook: optional pre-request webhook returning `allow`, `block` with a message, or `replace` with a new body; 2-second timeout, fail-open or fail-closed; warns when the URL is outside loopback, LAN or tailnet.
 
 ### Audit
@@ -520,8 +520,10 @@ Answer these on a real Spark and tailnet at the start of Phase 1, and record eac
   - **Codex 0.162.1:** `base_url` must include `/v1`; sends `POST /v1/responses` with `Authorization: Bearer <env_key value>`. Session and turn IDs arrive in the `x-codex-turn-metadata` JSON header (use for the session view). Snippet adds `request_max_retries = 0` only for testing; omit in the published snippet.
   - **OpenCode 1.19.0:** provider block in `~/.config/opencode/opencode.json` with `"npm": "@ai-sdk/openai-compatible"`, `options.baseURL` = `https://…:8443/v1`, `options.apiKey` = `sparkdash`; sends `POST /v1/chat/completions` with `Authorization: Bearer`, plus `x-opencode-session-id`.
   - **Gemini CLI 0.63.0:** `GOOGLE_GEMINI_BASE_URL` is the bare origin (no `/v1beta`); sends `x-goog-api-key`; calls `…:generateContent` and `…:streamGenerateContent?alt=sse` (query string must be forwarded). Headless use also needs `~/.gemini/settings.json` `{"security":{"auth":{"selectedType":"gemini-api-key"}}}`, or it exits with "Invalid auth method selected". It also calls a utility model (`gemini-3.5-flash-lite`) besides the chosen one, so grants for Gemini users must cover it or the CLI fails.
-- [ ] Which providers reject a conversation after a tool definition is removed (decides strip versus block per provider).
-- [ ] Baseline time to first byte for Claude Code direct to Anthropic, for the Phase 2 comparison.
+- [x] Which providers reject a conversation after a tool definition is removed (decides strip versus block per provider).
+  **None.** History containing a call to `get_weather` and its result, then the next turn sent with the tool present, replaced by another tool, or with no tools at all: every case returned 200 on Anthropic Messages (claude-haiku-5-5), OpenAI Chat Completions and Responses (gpt-5-mini), and Gemini (gemini-3.5-flash-lite). Strip everywhere. Gemini 3.x needs the model's own `thought_signature` on replayed function calls; a hand-built call without one is a `400` in every case, so the Gateway and guardrails must leave those parts untouched. Script: `sparkDash-tools/spike/tool-removal.mjs`.
+- [x] Baseline time to first byte for Claude Code direct to Anthropic, for the Phase 2 comparison.
+  Measured at the API level from the Gateway's host (rin-den), which is what the "under 5 ms added" target compares against: 20 streaming `/v1/messages` requests to claude-haiku-5-5 over a kept-alive connection, response headers and first SSE bytes both at **min 531, p50 605, p90 651, max 664 ms** (2026-10-12). Phase 2 repeats the same script through the Gateway on the same host. A Claude Code end-to-end comparison runs in Phase 2's acceptance checks. Script: `sparkDash-tools/spike/ttfb-baseline.mjs`.
 
 ## Repo and working rules
 
