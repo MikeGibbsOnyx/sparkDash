@@ -1,3 +1,4 @@
+// Modified by Onyx AI Labs, 2026: People page and access control wiring.
 import { BenchIcon } from "./components/bench/BenchIcon";
 import { setConfiguredTimeZone } from "./shared/timeZone";
 import { useState, useCallback, useEffect, useMemo } from "react";
@@ -37,6 +38,7 @@ import { ConnectionBanner } from "./components/ui/ConnectionBanner";
 import { ErrorBanner } from "./components/ui/ErrorBanner";
 import {
   ACTIVITY_ID,
+  PEOPLE_ID,
   SHOWCASE_ID,
   ENERGY_ID,
   OVERVIEW_ID,
@@ -56,6 +58,10 @@ import type { AuthMode, Settings, SparkSnapshot } from "./api/types";
 import { AccessTokenPrompt } from "./components/AccessTokenDialog";
 import { onTokenChange } from "./api/authToken";
 import { isWorkerSpark } from "./api/sparkRole";
+// Onyx: access control
+import { AccessGate } from "./components/PeoplePage/AccessGate";
+import { PeoplePage } from "./components/PeoplePage/PeoplePage";
+import { PeopleIcon } from "./components/PeoplePage/SignedInChip";
 
 /** Keep hidden worker ids in their original slots when the visible tabs are reordered. */
 function mergeTabOrderKeepingHidden(
@@ -439,6 +445,7 @@ function DashboardApp() {
     ];
     cmds.push(
       { id: "nav:tokens", group: "Go to", label: "Token totals", hint: "Page", icon: <TokensIcon className="h-4 w-4" />, keywords: "llm tokens generated prompt cached usage", run: () => navigate(TOKENS_ID) },
+      { id: "nav:people", group: "Go to", label: "People", hint: "Page", icon: <PeopleIcon className="h-4 w-4" />, keywords: "users roles team members admins groups access", run: () => navigate(PEOPLE_ID) },
       { id: "nav:energy", group: "Go to", label: "Fleet energy", hint: "Page", icon: <BoltIcon className="h-4 w-4" />, keywords: "power kwh watts cost electricity", run: () => navigate(ENERGY_ID) },
       { id: "nav:showcase", group: "Go to", label: "Showcase", hint: "Page", icon: <TerminalIcon className="h-4 w-4" />, keywords: "prompts terminals stream demo", run: () => navigate(SHOWCASE_ID) },
       { id: "nav:activity", group: "Go to", label: "Activity", hint: "Page", icon: <ListIcon className="h-4 w-4" />, keywords: "events log history recent", run: () => navigate(ACTIVITY_ID) }
@@ -543,6 +550,8 @@ function DashboardApp() {
                 <TokensPage sparks={displaySparks} onSelectSpark={navigate} />
               ) : activeId === ENERGY_ID ? (
                 <EnergyPage sparks={displaySparks} settings={settings} onSelectSpark={navigate} />
+              ) : activeId === PEOPLE_ID ? (
+                <PeoplePage />
               ) : activeId === ACTIVITY_ID ? (
                 <ActivityPage sparks={displaySparks} onSelectSpark={navigate} />
               ) : activeId === SHOWCASE_ID ? (
@@ -646,7 +655,9 @@ function App() {
       {route.mode === "showcase" && route.showcaseSparkId ? (
         <ShowcasePage sparkId={route.showcaseSparkId} />
       ) : (
-        <DashboardApp />
+        <AccessGate>
+          <DashboardApp />
+        </AccessGate>
       )}
       <AccessTokenPrompt />
     </>
