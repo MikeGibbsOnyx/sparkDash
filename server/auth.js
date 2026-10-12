@@ -1,3 +1,4 @@
+// Modified by Onyx AI Labs, 2026: access control wiring (see server/access/ and docs/GATEWAY-PLAN.md).
 import { timingSafeEqual } from "node:crypto";
 import { isIP } from "node:net";
 import os from "node:os";
@@ -186,6 +187,13 @@ export function createAuthMiddleware() {
 export function authStatus(req) {
   const tokenRequired = Boolean(configuredToken());
   return { tokenRequired, authenticated: authenticate(req).ok };
+}
+
+/** Onyx: the loopback Host/Origin check on its own, for the WebSocket upgrade (roles come from server/access/). */
+export function upgradeHostAllowed(req) {
+  const refused = refusedName(req);
+  if (refused) logRefused(refused);
+  return !refused;
 }
 
 export function authorizeUpgrade(req) {

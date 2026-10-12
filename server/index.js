@@ -1,3 +1,4 @@
+// Modified by Onyx AI Labs, 2026: access control wiring (see server/access/ and docs/GATEWAY-PLAN.md).
 import express from "express";
 import { createServer } from "http";
 import { WebSocketServer } from "ws";
@@ -19,7 +20,8 @@ import {
   validateDecodeBudget,
   validatePrefillBudget,
 } from "./validate.js";
-import { authStatus, authorizeUpgrade, createAuthMiddleware, createHostGuardMiddleware, isLoopbackBind, setTailscaleName } from "./auth.js";
+import { authStatus, authenticate, configuredToken, createHostGuardMiddleware, isLoopbackBind, setTailscaleName, upgradeHostAllowed } from "./auth.js";
+import { createAccess } from "./access/index.js"; // Onyx
 import { inspectHealth } from "./health.js";
 import { getSettings, updateSettings, loadSettings } from "./settings.js";
 import { broadcastForLanIp, effectiveMac, normalizeMac, sendWol } from "./wol.js";
@@ -468,7 +470,15 @@ app.use(express.json());
 app.get("/api/auth/status", createHostGuardMiddleware(), (req, res) => {
   res.json(authStatus(req));
 });
-app.use(createAuthMiddleware());
+// Onyx: identity and a minimum role on every route (server/access/), replacing the token-only check.
+const access = createAccess({
+  onEvent: (event) => recordEvent(event),
+  listenerLoopback: () => isLoopbackBind(BIND_HOST),
+  tokenOk: (req) => Boolean(configuredToken()) && authenticate(req).ok,
+  tokenConfigured: () => Boolean(configuredToken()),
+});
+app.use(createHostGuardMiddleware(), access.guard.middleware);
+access.registerRoutes(app);
 
 /** Fleet event log, newest first. Query: limit, sparkId, sinceId. */
 app.get("/api/events", (req, res) => {
@@ -2192,7 +2202,10 @@ const wss = new WebSocketServer({
   path: "/ws",
   // The dashboard only ever receives; clients send nothing meaningful.
   maxPayload: 64 * 1024,
-  verifyClient: ({ req }, done) => done(authorizeUpgrade(req)),
+  verifyClient: ({ req }, done) => {
+    if (!upgradeHostAllowed(req)) return done(false, 403);
+    access.guard.authorizeUpgrade(req).then((ok) => done(ok, 401), () => done(false, 401)); // Onyx
+  },
 });
 wss.on("error", (err) => {
   console.error("[ws] server error:", err?.message);
@@ -2310,6 +2323,7 @@ if (!startupPreflight.fatal) {
     if (authMode === "open-remote") {
       console.warn("[sparkDash] WARNING: remote bind without SPARKDASH_TOKEN is OPEN — anyone who can reach this port can change settings and power units off. Set SPARKDASH_TOKEN to require a token.");
     }
+    access.claims.createIfUnowned(); // Onyx
     startAllMonitors();
     fleetEnergyRuntime.start();
     llmTokenRuntime.start();
