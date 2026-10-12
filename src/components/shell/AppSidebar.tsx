@@ -19,7 +19,8 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import type { AuthMode, SparkSnapshot } from "../../api/types";
-import { ACTIVITY_ID, ENERGY_ID, OVERVIEW_ID, PEOPLE_ID, SHOWCASE_ID, TOKENS_ID, benchId, idToPath } from "../../constants";
+import { ACTIVITY_ID, ENERGY_ID, GATEWAY_ID, OVERVIEW_ID, PEOPLE_ID, SHOWCASE_ID, TOKENS_ID, benchId, idToPath } from "../../constants";
+import { GatewayDot, GatewayIcon, useGatewayDot } from "../GatewayPage/GatewayNavItem"; // Onyx
 import { PeopleIcon, SignedInChip } from "../PeoplePage/SignedInChip"; // Onyx
 import { BENCH_TYPES } from "../bench/benchCatalog";
 import { BoltIcon, ChevronDownIcon, GearIcon, GithubIcon, GlobeIcon, GridIcon, ListIcon, PanelLeftIcon, PlusIcon, SearchIcon, TerminalIcon, TokensIcon, XLogoIcon } from "../ui/icons";
@@ -164,6 +165,7 @@ export function AppSidebar({
   authMode = null,
   onCollapse,
 }: AppSidebarProps) {
+  const gatewayDot = useGatewayDot(); // Onyx
   const [items, setItems] = useState<string[]>(() => sparks.map((s) => s.id));
   const [dragging, setDragging] = useState(false);
   const [benchOpen, setBenchOpen] = useState(() => {
@@ -324,6 +326,16 @@ export function AppSidebar({
           >
             <PeopleIcon className="h-4 w-4" />
             <span className="rail-item__name">People</span>
+          </a>
+          <a
+            href={idToPath(GATEWAY_ID)}
+            className={`rail-item ${activeId === GATEWAY_ID ? "is-active" : ""}`}
+            onClick={inApp(() => onSelect(GATEWAY_ID))}
+            aria-current={activeId === GATEWAY_ID ? "page" : undefined}
+          >
+            <GatewayIcon className="h-4 w-4" />
+            <span className="rail-item__name">AI Gateway</span>
+            <GatewayDot dot={gatewayDot} />
           </a>
           <a
             href={idToPath(ENERGY_ID)}

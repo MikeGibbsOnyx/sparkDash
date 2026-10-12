@@ -1,3 +1,4 @@
+// Modified by Onyx AI Labs, 2026: adds the Connect page entry.
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
@@ -29,5 +30,12 @@ export default defineConfig({
   build: {
     outDir: "dist",
     emptyOutDir: true,
+    // Onyx: the Connect page is a second entry, served by the Gateway at `/`.
+    rolldownOptions: {
+      input: {
+        main: path.resolve(__dirname, "index.html"),
+        connect: path.resolve(__dirname, "connect.html"),
+      },
+    },
   },
 });

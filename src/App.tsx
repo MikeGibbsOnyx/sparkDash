@@ -39,6 +39,7 @@ import { ErrorBanner } from "./components/ui/ErrorBanner";
 import {
   ACTIVITY_ID,
   PEOPLE_ID,
+  GATEWAY_ID,
   SHOWCASE_ID,
   ENERGY_ID,
   OVERVIEW_ID,
@@ -62,6 +63,9 @@ import { isWorkerSpark } from "./api/sparkRole";
 import { AccessGate } from "./components/PeoplePage/AccessGate";
 import { PeoplePage } from "./components/PeoplePage/PeoplePage";
 import { PeopleIcon } from "./components/PeoplePage/SignedInChip";
+import { GatewayPage, openGatewayTab } from "./components/GatewayPage/GatewayPage";
+import { GatewayIcon } from "./components/GatewayPage/GatewayNavItem";
+import { fetchGatewayStatus, gatewayUrl } from "./components/GatewayPage/gatewayApi";
 
 /** Keep hidden worker ids in their original slots when the visible tabs are reordered. */
 function mergeTabOrderKeepingHidden(
@@ -446,6 +450,7 @@ function DashboardApp() {
     cmds.push(
       { id: "nav:tokens", group: "Go to", label: "Token totals", hint: "Page", icon: <TokensIcon className="h-4 w-4" />, keywords: "llm tokens generated prompt cached usage", run: () => navigate(TOKENS_ID) },
       { id: "nav:people", group: "Go to", label: "People", hint: "Page", icon: <PeopleIcon className="h-4 w-4" />, keywords: "users roles team members admins groups access", run: () => navigate(PEOPLE_ID) },
+      { id: "nav:gateway", group: "Go to", label: "AI Gateway", hint: "Page", icon: <GatewayIcon className="h-4 w-4" />, keywords: "llm proxy claude codex gemini provider keys models", run: () => navigate(GATEWAY_ID) },
       { id: "nav:energy", group: "Go to", label: "Fleet energy", hint: "Page", icon: <BoltIcon className="h-4 w-4" />, keywords: "power kwh watts cost electricity", run: () => navigate(ENERGY_ID) },
       { id: "nav:showcase", group: "Go to", label: "Showcase", hint: "Page", icon: <TerminalIcon className="h-4 w-4" />, keywords: "prompts terminals stream demo", run: () => navigate(SHOWCASE_ID) },
       { id: "nav:activity", group: "Go to", label: "Activity", hint: "Page", icon: <ListIcon className="h-4 w-4" />, keywords: "events log history recent", run: () => navigate(ACTIVITY_ID) }
@@ -472,6 +477,12 @@ function DashboardApp() {
         run: () => navigate(benchId(b.id)),
       });
     }
+    // Onyx: AI Gateway actions
+    cmds.push(
+      { id: "act:provider-key", group: "Actions", label: "Add provider key", icon: <GatewayIcon className="h-4 w-4" />, keywords: "anthropic openai gemini api key gateway", run: () => (navigate(GATEWAY_ID), openGatewayTab("models")) },
+      { id: "act:gateway-key", group: "Actions", label: "New gateway key", icon: <GatewayIcon className="h-4 w-4" />, keywords: "ci token key gateway", run: () => (navigate(GATEWAY_ID), openGatewayTab("access", "&new=key")) },
+      { id: "act:connect-link", group: "Actions", label: "Copy Connect link", icon: <GatewayIcon className="h-4 w-4" />, keywords: "gateway url share tailnet", run: () => void fetchGatewayStatus().then((s) => navigator.clipboard?.writeText(gatewayUrl(s))) }
+    );
     cmds.push({ id: "act:add", group: "Actions", label: "Add a Spark or GPU host", icon: <PlusIcon className="h-4 w-4" />, keywords: "new register connect", run: () => setShowAdd(true) });
     const sc = showcaseTarget(displaySparks);
     if (sc) {
@@ -552,6 +563,8 @@ function DashboardApp() {
                 <EnergyPage sparks={displaySparks} settings={settings} onSelectSpark={navigate} />
               ) : activeId === PEOPLE_ID ? (
                 <PeoplePage />
+              ) : activeId === GATEWAY_ID ? (
+                <GatewayPage />
               ) : activeId === ACTIVITY_ID ? (
                 <ActivityPage sparks={displaySparks} onSelectSpark={navigate} />
               ) : activeId === SHOWCASE_ID ? (

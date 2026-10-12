@@ -42,3 +42,7 @@ config/gpu-history.json
 config/fleet-energy.scope-*.json
 config/*.tmp
 config/*.json.*.tmp
+
+# Onyx: AI Gateway runtime data (never commit: encrypted keys, key file, internal socket)
+gateway-data/
+ipc/

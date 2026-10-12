@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-density="compact">
+<head>
+  <meta charset="UTF-8" />
+  <script>
+    try {
+      var t = localStorage.getItem("sparkdash-theme");
+      if (t === "white" || t === "light" || t === "dark" || t === "oled") document.documentElement.setAttribute("data-theme", t);
+      else if (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) document.documentElement.setAttribute("data-theme", "light");
+    } catch (e) {}
+  </script>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Connect to the AI gateway</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23e8a830' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M13 2L3 14h9l-1 8 10-12h-9l1-8z'/></svg>" />
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module" src="/src/connect/main.tsx"></script>
+</body>
+</html>

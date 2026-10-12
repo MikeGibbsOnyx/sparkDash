@@ -8,6 +8,8 @@ export const ACTIVITY_ID = "__activity__";
 export const SHOWCASE_ID = "__showcase__";
 /** Onyx: People and roles. */
 export const PEOPLE_ID = "__people__";
+/** Onyx: AI Gateway. */
+export const GATEWAY_ID = "__gateway__";
 /** Benchmark pages: the active id is this prefix + the benchmark type (decode, tool-eval, …). */
 export const BENCH_PREFIX = "__bench__:";
 
@@ -18,6 +20,7 @@ const FIXED_PATHS: Record<string, string> = {
   [ACTIVITY_ID]: "/activity",
   [SHOWCASE_ID]: "/showcase",
   [PEOPLE_ID]: "/people",
+  [GATEWAY_ID]: "/gateway",
 };
 
 export function benchId(type: string): string {
