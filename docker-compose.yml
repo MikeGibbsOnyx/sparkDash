@@ -1,4 +1,4 @@
-# Modified by Onyx AI Labs, 2026: mounts shared/ for access control.
+# Modified by Onyx AI Labs, 2026: shared/ mount, ipc volume, and the AI Gateway service.
 services:
   sparkdash:
     build:
@@ -30,6 +30,8 @@ services:
       - ./server:/app/server
       # Onyx: identity and SQLite helpers shared with the Gateway
       - ./shared:/app/shared:ro
+      # Onyx: the Gateway's internal API socket and its shared secret
+      - ipc:/app/ipc
       # Prompt catalog imported by DecodeBench / Showcase (not under ./server)
       - ./src/shared:/app/src/shared:ro
       - ./src/components/ShowcasePage/showcasePrompts.ts:/app/src/components/ShowcasePage/showcasePrompts.ts:ro
@@ -68,3 +70,50 @@ services:
       - HOST_ROOT_PATH=/host/root
       - SSH_CONTROL_PERSIST_SECONDS=${SSH_CONTROL_PERSIST_SECONDS:-60}
       - SSH_IDENTITY_FILE=${SSH_IDENTITY_FILE:-}
+      # Onyx: where the Gateway listens, for "Publish on your tailnet"
+      - GATEWAY_PORT=${GATEWAY_PORT:-5556}
+
+  # Onyx: the AI Gateway. The only place provider keys exist. Unprivileged by design:
+  # non-root, read-only root filesystem, all capabilities dropped, no host PID or host
+  # filesystem. It mounts only its data, the internal socket and tailscaled's socket (for whois).
+  # Host networking so it reaches model servers bound to this machine's loopback.
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      platforms:
+        - linux/arm64
+    container_name: sparkDash-gateway
+    restart: always
+    command: ["node", "gateway/index.js"]
+    user: "1000:1000"
+    network_mode: host
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+    volumes:
+      - gateway-data:/app/gateway-data
+      - ipc:/app/ipc
+      - /var/run/tailscale/tailscaled.sock:/var/run/tailscale/tailscaled.sock:ro
+    environment:
+      # 127.0.0.1 by default; publish it with "Publish on your tailnet" (Tailscale Serve :8443).
+      - GATEWAY_BIND_HOST=${GATEWAY_BIND_HOST:-127.0.0.1}
+      - GATEWAY_PORT=${GATEWAY_PORT:-5556}
+      - GATEWAY_ALLOW_PUBLIC_BIND=${GATEWAY_ALLOW_PUBLIC_BIND:-}
+      - GATEWAY_MAX_BODY_MB=${GATEWAY_MAX_BODY_MB:-32}
+      - GATEWAY_SECRETS_KEY=${GATEWAY_SECRETS_KEY:-}
+      # Optional: provider keys from the environment instead of the Models tab.
+      - GATEWAY_ANTHROPIC_API_KEY=${GATEWAY_ANTHROPIC_API_KEY:-}
+      - GATEWAY_OPENAI_API_KEY=${GATEWAY_OPENAI_API_KEY:-}
+      - GATEWAY_GEMINI_API_KEY=${GATEWAY_GEMINI_API_KEY:-}
+      - NODE_ENV=production
+
+volumes:
+  # Onyx: the Gateway's database, encrypted provider keys and key file. The Observer never mounts it.
+  gateway-data:
+  # Onyx: the internal API socket and its secret, shared by the Gateway (creates) and the Observer (reads).
+  ipc:
