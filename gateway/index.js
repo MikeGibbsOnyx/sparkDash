@@ -42,6 +42,9 @@ export function createGateway(config, opts = {}) {
 
 /** Create the internal socket and its secret (0600), readable by the Observer. */
 function listenInternal(config, handler) {
+  if (Buffer.byteLength(config.socketPath) > 100) {
+    throw new Error(`The internal socket path is too long for a Unix socket (${config.socketPath}). Set GATEWAY_IPC_DIR to a shorter directory.`);
+  }
   fs.mkdirSync(config.ipcDir, { recursive: true });
   let secret;
   try {
@@ -59,6 +62,10 @@ function listenInternal(config, handler) {
     /* no stale socket */
   }
   const server = http.createServer(handler(secret));
+  server.on("error", (err) => {
+    console.error(`[gateway] internal API can't listen on ${config.socketPath}: ${err.message}`);
+    process.exit(1);
+  });
   server.listen(config.socketPath, () => fs.chmodSync(config.socketPath, 0o600));
   return server;
 }
@@ -78,7 +85,12 @@ export async function main(env = process.env) {
   await gw.providers.syncEnvProviders();
   const pub = http.createServer({ noDelay: true, requestTimeout: 0, headersTimeout: 60_000, keepAliveTimeout: 65_000 }, gw.publicHandler);
   pub.listen(config.port, config.bindHost, () => console.log(`[gateway] listening on http://${config.bindHost}:${config.port} (sparkDash ${gw.version})`));
-  listenInternal(config, (secret) => createInternalHandler({ secret, state: gw.state, providers: gw.providers, grants: gw.grants, keys: gw.keys, config, version: gw.version }));
+  try {
+    listenInternal(config, (secret) => createInternalHandler({ secret, state: gw.state, providers: gw.providers, grants: gw.grants, keys: gw.keys, config, version: gw.version }));
+  } catch (err) {
+    console.error(`[gateway] ${err.message}`);
+    process.exit(1);
+  }
   console.log(`[gateway] internal API on ${config.socketPath}; gateway ${gw.state.enabled ? "on" : "off (turn it on from the AI Gateway page)"}`);
   const stop = () => {
     pub.close();

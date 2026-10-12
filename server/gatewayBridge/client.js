@@ -30,7 +30,7 @@ export function createGatewayClient({ ipcDir = GATEWAY_IPC_DIR, timeoutMs = 20_0
 
   function once(method, p, body, actor) {
     return new Promise((resolve, reject) => {
-      if (!fs.existsSync(socketPath)) return reject(new GatewayDown("The Gateway isn't running (no ipc/gateway.sock). Start it with: docker compose up -d gateway"));
+      if (!fs.existsSync(socketPath)) return reject(new GatewayDown("No ipc/gateway.sock: the Gateway container isn't running, or the Observer doesn't share its ipc volume."));
       const payload = body === undefined ? "" : JSON.stringify(body);
       const req = http.request(
         {

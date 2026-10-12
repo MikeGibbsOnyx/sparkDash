@@ -98,7 +98,7 @@ export class State {
   }
 
   today(sinceMs) {
-    const totals = this.db.prepare("SELECT count(*) AS requests, count(DISTINCT identity) AS people, sum(CASE WHEN status >= 400 OR error IS NOT NULL THEN 1 ELSE 0 END) AS errors FROM requests WHERE ts >= ?").get(sinceMs);
+    const totals = this.db.prepare("SELECT count(*) AS requests, count(DISTINCT identity) AS people, coalesce(sum(CASE WHEN status >= 400 OR error IS NOT NULL THEN 1 ELSE 0 END), 0) AS errors FROM requests WHERE ts >= ?").get(sinceMs);
     const topPeople = this.db.prepare("SELECT identity, count(*) AS requests FROM requests WHERE ts >= ? GROUP BY identity ORDER BY requests DESC LIMIT 5").all(sinceMs);
     const topModels = this.db.prepare("SELECT model, count(*) AS requests FROM requests WHERE ts >= ? AND model IS NOT NULL GROUP BY model ORDER BY requests DESC LIMIT 5").all(sinceMs);
     return { ...totals, topPeople, topModels };
