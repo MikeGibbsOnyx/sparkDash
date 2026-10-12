@@ -9,6 +9,19 @@ Format: version sections are listed newest first.
 
 ## [Unreleased]
 
+### Added (Onyx build)
+- **People and roles.** Tailscale names each person; sparkDash gives them a role: **Owner**, **Admin**, **Auditor** or **Member**. A person seen for the first time gets the default role (Member, changeable in Settings). The new **People** page (sidebar, under Token totals; Stats on phones; command palette) lists everyone with their role, groups, last seen and last device; Admins change roles and edit groups there, and only an Owner makes or unmakes an Owner. Every change is written to an audit table and to Activity.
+- **Who is calling.** In order: Tailscale Serve identity headers (loopback peer on a loopback bind), `tailscaled` whois for tailnet peers and Serve-forwarded tailnet IPs (cached 60 seconds), then the local console. The sidebar shows who you're signed in as, with a **Switch to Connect page** link.
+- **A minimum role on every route.** Reads need Auditor, changes need Admin, Owner claim codes need Owner; the WebSocket needs Auditor. Members see a Connect page placeholder instead of the fleet (the Connect page arrives with the AI Gateway).
+- **Owner claim codes.** With no Owner yet, sparkDash prints a one-time code at startup (single use, 24 hours); the first person to enter it through Tailscale Serve becomes Owner. Owners can create more in Settings.
+- **`SPARKDASH_LOCAL_CONSOLE=0`** turns off local-console Owner rights, for installs behind a reverse proxy that doesn't set `X-Forwarded-For`.
+- New `config/sparkdash.db` (SQLite) holds people, groups, claim codes and the audit trail.
+
+### Changed (Onyx build) — breaking
+- **People reaching sparkDash through Tailscale Serve are Members until promoted.** Before, anyone who could reach a loopback-bound dashboard read everything. The local console keeps full access; promote your team on the People page.
+- **Requests that can't be identified are refused** with a `401` naming the fix: a reverse proxy forwarding a non-tailnet address, Tailscale Funnel, or a direct LAN client on a non-loopback bind. Send `SPARKDASH_TOKEN` (acts as Admin) or use Tailscale Serve.
+- With `SPARKDASH_TOKEN` set, the local console still reads freely and needs the token to change things, as before.
+
 ### Added
 - **Models panel: "Run both".** Starting a model while another launcher on the same unit is running now offers **Run both** next to **Stop it, then start**, so two models can share a unit without starting the second by hand. The start script can still refuse if memory is short. Thanks @ZackSample (#195).
 
