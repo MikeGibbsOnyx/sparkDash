@@ -144,7 +144,10 @@ export function createPublicHandler(deps) {
     // Budgets: refuse before anything leaves the machine.
     const admission = metered ? budgets.admit({ subject, label: who.label, costBasis, priceOut: prices?.out ?? null, maxOutput: requestedMaxOutput(route.format, parsed) }) : { ok: true, ticket: null };
     if (!admission.ok) {
-      return sendError(res, family, admission.status, admission.message, admission.retryable ? { "x-should-retry": "true", "retry-after": "2" } : {}, { quota: !admission.retryable });
+      sendError(res, family, admission.status, admission.message, admission.retryable ? { "x-should-retry": "true", "retry-after": "2" } : {}, { quota: !admission.retryable });
+      // Refusals are request records too (no tokens, no cost), so a retry loop would show.
+      usage.record({ ts: Date.now(), identity: who.label, via: who.via, kind: who.kind, keyName: who.keyName ?? null, groups: who.groups, device: who.device, client: clientFromUserAgent(req.headers["user-agent"]), providerId: provider.id, model: modelName, format: route.format, stream: route.stream ?? Boolean(parsed?.stream), status: admission.status, latencyMs: 0, costBasis, usageState: "refused", sessionId: req.headers["x-claude-code-session-id"] || null, agentId: req.headers["x-claude-code-agent-id"] || null, error: admission.message });
+      return;
     }
 
     let outBody = body;

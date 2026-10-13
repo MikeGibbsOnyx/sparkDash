@@ -144,6 +144,11 @@ test("an exhausted budget: 429 in each client's format, x-should-retry false, na
   assert.equal(o.json().error.type, "insufficient_quota");
   // Someone else isn't covered.
   assert.equal((await g.call("/v1/messages", json({ model: "claude-test", max_tokens: 50, messages: [] }, { ...ANTH, "tailscale-user-login": "pat@onyx.test" }))).status, 200);
+  // Refusals are recorded, without tokens or cost.
+  const refused = g.gw.db.prepare("SELECT status, usage_state, in_tok, cost_usd, error FROM requests WHERE usage_state = 'refused'").all();
+  assert.equal(refused.length, 2);
+  assert.deepEqual([refused[0].status, refused[0].in_tok, refused[0].cost_usd], [429, null, null]);
+  assert.match(refused[0].error, /Sam monthly/);
   // Exhaustion is audited once, and is a finding.
   const events = g.gw.state.eventsSince(0).filter((e) => e.action === "budget.exhausted");
   assert.equal(events.length, 1);

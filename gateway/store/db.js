@@ -129,7 +129,7 @@ export const MIGRATIONS = [
    ALTER TABLE requests ADD COLUMN key_name TEXT;
    ALTER TABLE requests ADD COLUMN groups TEXT NOT NULL DEFAULT '[]';
    ALTER TABLE requests ADD COLUMN end_ts INTEGER;
-   -- ok | partial | none (no usage in the response) | unreadable | unmetered (count_tokens)
+   -- ok | partial | none (no usage in the response) | unreadable | unmetered (count_tokens) | refused (budget)
    ALTER TABLE requests ADD COLUMN usage_state TEXT;
    CREATE INDEX requests_local ON requests(provider_id, end_ts) WHERE cost_basis = 'local';
    -- One row per local day (Settings time zone) and dimension; rebuilt if the zone changes.
