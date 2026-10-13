@@ -190,6 +190,13 @@ test("no secret in any response, log, the database file or the audit trail", asy
   ];
   for (const [p, body, h] of hits) await g.call(p, { method: "POST", headers: { ...S, ...h }, body: JSON.stringify(body) });
   for (const p of ["/v1/models", "/v1beta/models", "/me", "/me/keys", "/me/usage"]) await g.call(p, { headers: S });
+  // Phase 3: a budget that refuses, a streamed chat with the hidden usage chunk, and every usage view.
+  await g.admin("POST", "/budgets", { name: "planted budget", scope: "everyone", period: "day", limitTokens: 1 });
+  await g.call("/v1/chat/completions", { method: "POST", headers: { ...S, authorization: `Bearer ${KEYS.openai}` }, body: JSON.stringify({ model: "gpt-test", stream: true, messages: [] }) });
+  await g.call("/v1/messages", { method: "POST", headers: { ...S, "anthropic-version": "2023-06-01", "x-api-key": KEYS.anthropic }, body: JSON.stringify({ model: "claude-test", max_tokens: 5, messages: [] }) });
+  await g.internalCall("POST", "/internal/energy", { timeZone: "America/Toronto", rate: 0.1, minutes: [{ machine: "spark-1", minute: Date.now() - 600_000, wh: 1, serverTokens: 5 }] });
+  for (const p of ["/budgets", "/usage?range=all&groupBy=person", "/usage?range=all&groupBy=session", "/usage/daily?range=all", "/usage/energy?range=all", "/usage/local"]) await g.admin("GET", p);
+  await g.admin("POST", "/grants/preview", { draft: { name: "x", selectors: ["*"], modelPatterns: ["*"] } });
   for (const p of ["/status", "/providers", "/models", "/keys", "/grants", "/local-servers", "/settings"]) await g.admin("GET", p);
   for (const p of g.gw.providers.list()) {
     await g.admin("POST", `/providers/${p.id}/test`);
@@ -199,7 +206,7 @@ test("no secret in any response, log, the database file or the audit trail", asy
   await g.internalCall("GET", "/internal/health");
   await g.internalCall("GET", "/internal/events?since=0");
 
-  const everything = [...g.seenResponses, ...g.logs, JSON.stringify(g.gw.db.prepare("SELECT * FROM audit").all()), JSON.stringify(g.gw.db.prepare("SELECT * FROM requests").all())].join("\n");
+  const everything = [...g.seenResponses, ...g.logs, JSON.stringify(g.gw.db.prepare("SELECT * FROM audit").all()), JSON.stringify(g.gw.db.prepare("SELECT * FROM requests").all()), JSON.stringify(g.gw.db.prepare("SELECT * FROM usage_daily").all())].join("\n");
   g.gw.db.pragma("wal_checkpoint(TRUNCATE)");
   const dbBytes = fs.readFileSync(path.join(g.dataDir, "gateway.db")).toString("latin1");
   for (const [name, secret] of Object.entries({ ...KEYS, oauth, gwKey })) {
