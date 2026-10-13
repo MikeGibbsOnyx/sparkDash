@@ -8,7 +8,20 @@ type Me = {
   models: { name: string; provider: string }[];
   lastRequest: { ts: number; client: string; model: string; status: number } | null;
   personalKeys: boolean;
+  budgets?: MyBudget[];
 };
+type MyBudget = { id: number; name: string; period: string; limitUsd: number | null; limitTokens: number | null; spentUsd: number; spentTokens: number; resets: string; state: "ok" | "warning" | "exhausted"; warnPct: number };
+type UsageRow = { model: string; requests: number; inTok: number; outTok: number; costUsd: number; subscriptionRequests: number };
+
+const money = (n: number) => `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const count = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e4 ? `${Math.round(n / 1e3)}k` : n.toLocaleString("en-US"));
+
+/** "Budget Sam monthly: $12.30 of $50.00 this month. Resets Nov 1." */
+export function budgetLine(b: MyBudget): string {
+  const used = [b.limitUsd != null ? `${money(b.spentUsd)} of ${money(b.limitUsd)}` : null, b.limitTokens != null ? `${count(b.spentTokens)} of ${count(b.limitTokens)} tokens` : null].filter(Boolean).join(", ");
+  const head = b.state === "exhausted" ? `Budget ${b.name} is used up: ${used}. Requests are refused until it resets` : `Budget ${b.name}: ${used} this ${b.period}. Resets`;
+  return `${head} ${b.resets}.`;
+}
 type Key = { id: number; name: string; prefix: string; expiresAt: number | null; lastUsedAt: number | null; state: string };
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
@@ -107,6 +120,11 @@ export function ConnectPage() {
             Signed in as <b>{who}</b>
             {me.who.device ? <> on {me.who.device}</> : null}. You can use {me.models.length} model{me.models.length === 1 ? "" : "s"}.
           </p>
+          {(me.budgets ?? []).map((b) => (
+            <p key={b.id} className={`cn-budget ${b.state === "exhausted" ? "cn-bad" : b.state === "warning" ? "cn-warn-text" : "cn-muted"}`}>
+              {budgetLine(b)}
+            </p>
+          ))}
         </div>
         {me.who.role && me.who.role !== "member" ? (
           <a className="btn btn--sm" href={`${window.location.protocol}//${window.location.hostname}/`}>
@@ -183,9 +201,9 @@ export function ConnectPage() {
 }
 
 function Usage() {
-  const [rows, setRows] = useState<{ model: string; requests: number }[] | null>(null);
+  const [rows, setRows] = useState<UsageRow[] | null>(null);
   useEffect(() => {
-    call<{ byModel: { model: string; requests: number }[] }>("/me/usage")
+    call<{ byModel: UsageRow[] }>("/me/usage")
       .then((r) => setRows(r.byModel))
       .catch(() => setRows([]));
   }, []);
@@ -200,6 +218,8 @@ function Usage() {
             <tr>
               <th>Model</th>
               <th>Requests</th>
+              <th>Tokens in / out</th>
+              <th>Cost</th>
             </tr>
           </thead>
           <tbody>
@@ -207,6 +227,10 @@ function Usage() {
               <tr key={r.model}>
                 <td className="mono">{r.model}</td>
                 <td>{r.requests}</td>
+                <td>
+                  {count(r.inTok)} / {count(r.outTok)}
+                </td>
+                <td>{r.costUsd ? money(r.costUsd) : r.subscriptionRequests === r.requests ? "Subscription" : "-"}</td>
               </tr>
             ))}
           </tbody>

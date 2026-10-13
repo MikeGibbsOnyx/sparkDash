@@ -1,3 +1,4 @@
+// Modified by Onyx AI Labs, 2026: AI gateway traffic on the Token totals page (wiring only).
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import { fetchTokenHistory, resetTokenTotals } from "../../api/client";
 import { ClearMenu, type ClearChoice } from "../ui/ClearMenu";
@@ -33,6 +34,7 @@ import {
   type Summary,
 } from "./tokenStats";
 import "../../styles/tokens.css";
+import { GatewayTokenFeed } from "../GatewayPage/GatewayTokenFeed"; // Onyx
 
 const POLL_MS = 30_000;
 const fmt = formatTokensCompact;
@@ -332,6 +334,7 @@ export function TokensPage({ sparks, onSelectSpark }: { sparks: SparkSnapshot[];
                 </div>
                 <EndpointTable rows={view.endpoints} sparkName={sparkName} knownSpark={knownSpark} onSelectSpark={onSelectSpark} />
               </section>
+              <GatewayTokenFeed range={range} phrase={spec.phrase} /> {/* Onyx */}
             </>
           ) : (
             <section className="panel tk-note" role="status">

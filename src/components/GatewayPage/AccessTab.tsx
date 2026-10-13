@@ -1,9 +1,10 @@
-// Onyx: Access tab (Phase 2 part): grants (read-only until the editor lands) and gateway keys.
+// Onyx: Access tab: grants, budgets and gateway keys.
 import { useCallback, useEffect, useState } from "react";
 import { relativeTime } from "../PeoplePage/relativeTime";
-import { fetchPeople } from "../PeoplePage/accessApi";
+import { fetchPeople, type Group, type Person } from "../PeoplePage/accessApi";
+import { BudgetsSection, GrantsSection } from "./AccessEditors";
 import { snippetFor, curlCheck } from "../../connect/snippets";
-import { createKey, fetchGatewaySettings, fetchGrants, fetchKeys, revokeKey, saveGatewaySettings, type GatewayKey, type Grant } from "./gatewayApi";
+import { createKey, fetchBudgets, fetchGatewaySettings, fetchGrants, fetchKeys, revokeKey, saveGatewaySettings, type Budget, type GatewayKey, type Grant } from "./gatewayApi";
 
 function Copy({ text, label = "Copy" }: { text: string; label?: string }) {
   const [done, setDone] = useState(false);
@@ -132,42 +133,37 @@ function NewKeyForm({ grants, onCreated, onCancel }: { grants: Grant[]; onCreate
 
 export function AccessTab({ canEdit, url, startNewKey = false }: { canEdit: boolean; url: string; startNewKey?: boolean }) {
   const [grants, setGrants] = useState<Grant[]>([]);
+  const [budgets, setBudgets] = useState<Budget[]>([]);
+  const [timeZone, setTimeZone] = useState("UTC");
+  const [people, setPeople] = useState<Person[]>([]);
+  const [groups, setGroups] = useState<Group[]>([]);
   const [keys, setKeys] = useState<GatewayKey[] | null>(null);
   const [personalKeys, setPersonalKeys] = useState<boolean | null>(null);
   const [creating, setCreating] = useState(startNewKey && canEdit);
   const [revealed, setRevealed] = useState<{ key: string; name: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const load = useCallback(() => {
-    Promise.all([fetchGrants(), fetchKeys(), fetchGatewaySettings()])
-      .then(([g, k, s]) => {
+    Promise.all([fetchGrants(), fetchKeys(), fetchGatewaySettings(), fetchBudgets()])
+      .then(([g, k, s, b]) => {
         setGrants(g.grants);
         setKeys(k.keys);
         setPersonalKeys(s.personalKeys);
+        setBudgets(b.budgets);
+        setTimeZone(b.timeZone);
       })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+    fetchPeople().then(
+      (r) => (setPeople(r.people), setGroups(r.groups)),
+      () => {}
+    );
   }, []);
   useEffect(load, [load]);
 
   return (
     <div className="gw-tab">
       {error ? <p className="gw-bad">{error}</p> : null}
-      <section className="panel gw-section" aria-label="Grants">
-        <h2 className="gw-h2">Grants</h2>
-        <p className="gw-muted gw-small">Who may use which models. Access is the union of matching grants. The grant editor and budgets come with usage and cost.</p>
-        <ul className="gw-list">
-          {grants.map((g) => (
-            <li key={g.id}>
-              <div>
-                <b>{g.name}</b>
-                <div className="gw-small">
-                  <span className="mono">{g.selectors.join(", ")}</span> → <span className="mono">{g.modelPatterns.join(", ")}</span>
-                </div>
-              </div>
-            </li>
-          ))}
-          {grants.length === 0 ? <li className="gw-muted">Turning on the gateway creates “Everyone → all models”.</li> : null}
-        </ul>
-      </section>
+      <GrantsSection grants={grants} people={people} groups={groups} canEdit={canEdit} onChanged={load} />
+      <BudgetsSection budgets={budgets} timeZone={timeZone} people={people} groups={groups} keys={keys ?? []} canEdit={canEdit} onChanged={load} />
 
       <section className="panel gw-section" aria-label="Gateway keys">
         <div className="gw-section__head">

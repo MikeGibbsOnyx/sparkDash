@@ -373,6 +373,7 @@ export class Providers {
         reachable: Boolean(s.reachable),
         up: Boolean(s.up),
         serve: Boolean(s.serve),
+        injectUsage: options(this.row(`local-${s.id}`)).injectUsage !== false,
         fix: s.reachable ? null : `The server on ${s.machine} only listens on its own loopback. Bind it to a LAN or tailnet address so the Gateway can reach it.`,
       }));
   }

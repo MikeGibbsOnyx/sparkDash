@@ -212,3 +212,10 @@
   align-items: center;
   font-size: 13px;
 }
+.cn-budget {
+  margin: 4px 0 0;
+  font-size: 13px;
+}
+.cn-warn-text {
+  color: var(--color-warning);
+}

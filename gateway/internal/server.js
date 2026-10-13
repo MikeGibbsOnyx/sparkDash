@@ -145,7 +145,7 @@ export function createInternalHandler(deps) {
     ["GET", /^\/usage\/daily$/, (_m, _b, _a, url) => usage.daily({ range: url.searchParams.get("range") || "30d" })],
     ["GET", /^\/usage\/energy$/, (_m, _b, _a, url) => energy.summary(sinceFor(url.searchParams.get("range") || "7d"))],
     // Gateway traffic to local models, for the Token totals page.
-    ["GET", /^\/usage\/local$/, (_m, _b, _a, url) => ({ models: usage.localTotals(sinceFor(url.searchParams.get("range") || "all")) })],
+    ["GET", /^\/usage\/local$/, (_m, _b, _a, url) => ({ models: usage.localTotals(url.searchParams.has("since") ? Number(url.searchParams.get("since")) || 0 : sinceFor(url.searchParams.get("range") || "all")) })],
     ["GET", /^\/settings$/, () => ({ personalKeys: state.personalKeys, timeZone: state.timeZone })],
     ["PATCH", /^\/settings$/, (_m, b, actor) => {
       if (b.personalKeys !== undefined) {

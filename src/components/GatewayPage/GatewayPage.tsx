@@ -3,11 +3,12 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { useRole } from "../PeoplePage/AccessContext";
 import { atLeast } from "../PeoplePage/accessApi";
 import { AccessTab } from "./AccessTab";
+import { UsageTab } from "./UsageTab";
 import { AddProviderKey, ModelsTab } from "./ModelsTab";
-import { enableGateway, fetchGatewayStatus, gatewayUrl, pauseGateway, publishGateway, setServe, fetchLocalServers, type GatewayStatus, type LocalServer, type PublishState } from "./gatewayApi";
+import { enableGateway, fetchGatewayStatus, gatewayUrl, pauseGateway, publishGateway, setServe, fetchLocalServers, tokens, usd, type GatewayStatus, type LocalServer, type PublishState } from "./gatewayApi";
 import "./gateway.css";
 
-type Tab = "overview" | "models" | "access";
+type Tab = "overview" | "models" | "access" | "usage";
 
 /** Open the AI Gateway page on a tab, from anywhere (after navigating to it). */
 export function openGatewayTab(tab: Tab, extra = "") {
@@ -23,7 +24,7 @@ function readTab(): { tab: Tab; newKey: boolean } {
   try {
     const q = new URLSearchParams(window.location.search);
     const t = q.get("tab");
-    return { tab: t === "models" || t === "access" ? t : "overview", newKey: q.get("new") === "key" };
+    return { tab: t === "models" || t === "access" || t === "usage" ? t : "overview", newKey: q.get("new") === "key" };
   } catch {
     return { tab: "overview", newKey: false };
   }
@@ -189,6 +190,10 @@ function Overview({ status, canEdit, onChanged }: { status: GatewayStatus; canEd
         <PublishBlock publish={status.publish} canEdit={canEdit} onDone={onChanged} />
         <div className="gw-kpis">
           <div>
+            <b>{usd((g.today.cloudUsd ?? 0) + (g.today.localUsd ?? 0))}</b>
+            <span>spent today</span>
+          </div>
+          <div>
             <b>{g.today.requests}</b>
             <span>requests today</span>
           </div>
@@ -205,7 +210,12 @@ function Overview({ status, canEdit, onChanged }: { status: GatewayStatus; canEd
             <span>models available</span>
           </div>
         </div>
-        <p className="gw-muted gw-small">Spend appears here once usage and cost arrive.</p>
+        <p className="gw-muted gw-small">
+          Today in {g.timeZone}: cloud {usd(g.today.cloudUsd ?? 0)}, local energy {usd(g.today.localUsd ?? 0)} (estimate), {tokens(g.today.tokens ?? 0)} tokens.{" "}
+          <button type="button" className="btn btn--sm btn--ghost" onClick={() => openGatewayTab("usage")}>
+            Open Usage
+          </button>
+        </p>
       </section>
       <div className="gw-two">
         <section className="panel gw-section" aria-label="Top people today">
@@ -338,6 +348,7 @@ export function GatewayPage() {
                 ["overview", "Overview"],
                 ["models", "Models"],
                 ["access", "Access"],
+                ["usage", "Usage"],
               ] as const
             ).map(([id, label]) => (
               <button key={id} type="button" role="tab" aria-selected={tab === id} className={tab === id ? "is-on" : ""} onClick={() => go(id)}>
@@ -348,6 +359,7 @@ export function GatewayPage() {
           {tab === "overview" ? <Overview status={status} canEdit={canEdit} onChanged={load} /> : null}
           {tab === "models" ? <ModelsTab canEdit={canEdit} onChanged={load} /> : null}
           {tab === "access" ? <AccessTab canEdit={canEdit} url={gatewayUrl(status)} startNewKey={newKey} /> : null}
+          {tab === "usage" ? <UsageTab /> : null}
         </>
       ) : null}
       {!canEdit && status ? <p className="gw-muted gw-small">You can view this page but not change it.</p> : null}
