@@ -33,13 +33,13 @@ const OPENAI_TYPES = { 400: "invalid_request_error", 401: "authentication_error"
  * `quota` marks a used-up budget: OpenAI-format clients get `insufficient_quota`, the type
  * OpenAI itself uses for spend that has run out, which clients treat as final.
  */
-export function sendError(res, family, status, message, extraHeaders = {}, { quota = false } = {}) {
+export function sendError(res, family, status, message, extraHeaders = {}, { quota = false, code = null } = {}) {
   let body;
   if (family === "anthropic") body = { type: "error", error: { type: ANTHROPIC_TYPES[status] || "api_error", message } };
   else if (family === "gemini") body = { error: { code: status, message, status: GEMINI_STATUS[status] || "INTERNAL" } };
   else {
     const type = quota ? "insufficient_quota" : OPENAI_TYPES[status] || "server_error";
-    body = { error: { message, type, code: quota ? "insufficient_quota" : OPENAI_TYPES[status] || null } };
+    body = { error: { message, type, code: code ?? (quota ? "insufficient_quota" : OPENAI_TYPES[status] || null) } };
   }
   const retry = status === 502 || status === 503;
   res.writeHead(status, {

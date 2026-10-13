@@ -142,11 +142,17 @@ test("an exhausted budget: 429 in each client's format, x-should-retry false, na
   const o = await g.call("/v1/chat/completions", json({ model: "gpt-test", messages: [] }));
   assert.equal(o.status, 429);
   assert.equal(o.json().error.type, "insufficient_quota");
+  // Codex replaces the text of any 429 with its own; it gets a 400 that it shows as written.
+  const cx = await g.call("/v1/responses", json({ model: "gpt-test", input: "hi" }, { "user-agent": "codex_exec/0.162.1 (Mac OS 26.0.0; arm64)" }));
+  assert.equal(cx.status, 400);
+  assert.equal(cx.headers.get("x-should-retry"), "false");
+  assert.equal(cx.json().error.code, "budget_exceeded");
+  assert.match(cx.json().error.message, /^Budget 'Sam monthly' used/);
   // Someone else isn't covered.
   assert.equal((await g.call("/v1/messages", json({ model: "claude-test", max_tokens: 50, messages: [] }, { ...ANTH, "tailscale-user-login": "pat@onyx.test" }))).status, 200);
   // Refusals are recorded, without tokens or cost.
   const refused = g.gw.db.prepare("SELECT status, usage_state, in_tok, cost_usd, error FROM requests WHERE usage_state = 'refused'").all();
-  assert.equal(refused.length, 2);
+  assert.equal(refused.length, 3);
   assert.deepEqual([refused[0].status, refused[0].in_tok, refused[0].cost_usd], [429, null, null]);
   assert.match(refused[0].error, /Sam monthly/);
   // Exhaustion is audited once, and is a finding.
