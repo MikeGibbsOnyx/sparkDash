@@ -32,10 +32,11 @@ function whoisTransport(env = process.env) {
  * @param {(req: any) => boolean} opts.tokenOk
  * @param {() => boolean} opts.tokenConfigured
  * @param {string} [opts.dbPath]
+ * @param {() => void} [opts.onDirectoryChange]  people or groups changed (the Gateway bridge pushes a snapshot)
  */
 export function createAccess(opts) {
   const db = openAccessDb(opts.dbPath);
-  const directory = new Directory(db, { onEvent: opts.onEvent });
+  const directory = new Directory(db, { onEvent: opts.onEvent, onChange: () => opts.onDirectoryChange?.() });
   const claims = new ClaimCodes(db, directory);
   const whois = createWhois(whoisTransport());
   const guard = createAccessGuard({

@@ -1,4 +1,4 @@
-# Modified by Onyx AI Labs, 2026: copies shared/ into the image.
+# Modified by Onyx AI Labs, 2026: copies shared/ and gateway/ into the image.
 # ============================================================
 # sparkDash — Multi-DGX Spark Monitoring Dashboard
 # Dockerfile for arm64 (DGX Spark GB10 platform)
@@ -59,6 +59,10 @@ COPY --from=builder /app/package-lock.json ./package-lock.json
 COPY --from=builder /app/server ./server
 # Onyx: code shared by the Observer and the Gateway (identity, SQLite helpers)
 COPY --from=builder /app/shared ./shared
+# Onyx: the AI Gateway service (same image, its own unprivileged container; see docker-compose.yml)
+COPY --from=builder /app/gateway ./gateway
+# Owned by the Gateway's user (node, uid 1000), so named volumes mounted here start writable for it.
+RUN mkdir -p /app/gateway-data /app/ipc && chown 1000:1000 /app/gateway-data /app/ipc && chmod 700 /app/gateway-data
 COPY --from=builder /app/src/shared ./src/shared
 COPY --from=builder /app/src/components/ShowcasePage/showcasePrompts.ts ./src/components/ShowcasePage/showcasePrompts.ts
 COPY --from=builder /app/config ./config

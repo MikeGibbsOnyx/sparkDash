@@ -341,6 +341,23 @@ Tailscale says who each person is; sparkDash decides what they can do.
 - Requests sparkDash can't identify (Tailscale Funnel, a reverse proxy forwarding a non-tailnet address, a LAN client on a non-loopback bind) get a `401` that says what to do.
 - People, groups, claim codes and the audit trail live in `config/sparkdash.db`.
 
+## AI Gateway (Onyx build)
+
+One address for every AI tool on your team, on your own hardware. Provider keys stay in the Gateway; Tailscale says who each request is from.
+
+1. `docker compose up -d` starts the dashboard and the `gateway` service (non-root, read-only, no capabilities, only its own volumes).
+2. Open **AI Gateway** in the sidebar: **Turn on**, paste a provider key (Anthropic, OpenAI, Gemini or OpenRouter) and press **Test and save**, or switch on a local model server.
+3. **Publish on your tailnet** (or run `sudo tailscale serve --bg --https=8443 http://127.0.0.1:5556`) and share the address. People open it, pick their tool and copy one block.
+
+| Tool | Points at |
+| --- | --- |
+| Claude Code | `ANTHROPIC_BASE_URL=https://<machine>.<tailnet>.ts.net:8443` in `~/.claude/settings.json` (add `ANTHROPIC_AUTH_TOKEN=sparkdash` to use the company key) |
+| Codex | `base_url = "https://…:8443/v1"`, `wire_api = "responses"` |
+| Gemini CLI | `GOOGLE_GEMINI_BASE_URL=https://…:8443`, `GEMINI_API_KEY=sparkdash` |
+| OpenCode, others | `https://…:8443/v1`, key `sparkdash` |
+
+On the tailnet the key is the literal `sparkdash`; the Gateway uses your Tailscale identity. CI runners and tagged servers use a **gateway key** from the Access tab. Keys can also come from `GATEWAY_ANTHROPIC_API_KEY`, `GATEWAY_OPENAI_API_KEY` and `GATEWAY_GEMINI_API_KEY`. The Gateway listens on `127.0.0.1:5556` (`GATEWAY_BIND_HOST`, `GATEWAY_PORT`).
+
 ## Mobile PWA (install on a phone)
 
 sparkDash is a **PWA**: from a supported browser it installs to the home screen and runs fullscreen like a native app, with its own icon and no browser chrome.

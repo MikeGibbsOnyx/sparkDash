@@ -22,6 +22,7 @@ import {
 } from "./validate.js";
 import { authStatus, authenticate, configuredToken, createHostGuardMiddleware, isLoopbackBind, setTailscaleName, upgradeHostAllowed } from "./auth.js";
 import { createAccess } from "./access/index.js"; // Onyx
+import { createGatewayBridge } from "./gatewayBridge/index.js"; // Onyx
 import { inspectHealth } from "./health.js";
 import { getSettings, updateSettings, loadSettings } from "./settings.js";
 import { broadcastForLanIp, effectiveMac, normalizeMac, sendWol } from "./wol.js";
@@ -476,9 +477,13 @@ const access = createAccess({
   listenerLoopback: () => isLoopbackBind(BIND_HOST),
   tokenOk: (req) => Boolean(configuredToken()) && authenticate(req).ok,
   tokenConfigured: () => Boolean(configuredToken()),
+  onDirectoryChange: () => void gatewayBridge.pushDirectory(),
 });
 app.use(createHostGuardMiddleware(), access.guard.middleware);
 access.registerRoutes(app);
+// Onyx: the Observer side of the AI Gateway (server/gatewayBridge/).
+const gatewayBridge = createGatewayBridge({ directory: access.directory, db: access.db, orderedSnapshots, registry, recordEvent: (e) => recordEvent(e) });
+gatewayBridge.registerRoutes(app);
 
 /** Fleet event log, newest first. Query: limit, sparkId, sinceId. */
 app.get("/api/events", (req, res) => {
@@ -2324,6 +2329,7 @@ if (!startupPreflight.fatal) {
       console.warn("[sparkDash] WARNING: remote bind without SPARKDASH_TOKEN is OPEN — anyone who can reach this port can change settings and power units off. Set SPARKDASH_TOKEN to require a token.");
     }
     access.claims.createIfUnowned(); // Onyx
+    gatewayBridge.start(); // Onyx
     startAllMonitors();
     fleetEnergyRuntime.start();
     llmTokenRuntime.start();
