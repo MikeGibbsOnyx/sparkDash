@@ -485,14 +485,22 @@ Acceptance on rin-den (2026-10-12), Gateway container as in docker-compose.yml (
 
 ### Phase 3: Usage, cost and budgets
 
-- [ ] Usage taps for all four formats, including partial streams and the hidden `include_usage` chunk
-- [ ] Prices table; price snapshot per request; Subscription marking
-- [ ] Energy push from the Observer; per-minute local cost allocation; unattributed totals
-- [ ] Rollups; budgets with in-flight reservations and per-identity concurrency cap; client-format `429`
-- [ ] Grants and groups editors; Access and Usage tabs; Token totals feed
-- [ ] Tests: parser tables per format; budget period boundaries in America/Toronto; overshoot bound with 8 parallel requests; allocation maths
+- [x] Usage taps for all four formats, including partial streams and the hidden `include_usage` chunk
+- [x] Prices table; price snapshot per request; Subscription marking
+- [x] Energy push from the Observer; per-minute local cost allocation; unattributed totals
+- [x] Rollups; budgets with in-flight reservations and per-identity concurrency cap; client-format `429`
+- [x] Grants and groups editors; Access and Usage tabs; Token totals feed
+- [x] Tests: parser tables per format; budget period boundaries in America/Toronto; overshoot bound with 8 parallel requests; allocation maths
 
 **Done when:** a test session's tokens match the provider console; a budget stops Claude Code and Codex with a readable message and no retry loop; a local request shows an energy cost within 2 minutes.
+
+Acceptance on rin-den (2026-10-13): Gateway and Observer from the p3 image, Gateway on the Phase 2 data volume (schema migrated in place), Observer monitoring rin-den itself with its Ollama server (qwen3vl32b) served through the Gateway, electricity price $0.15/kWh, time zone America/Toronto. Clients ran on a Mac on the tailnet, from a clean HOME with the Connect page's snippets.
+
+- [ ] **Tokens match the provider console.** Claude Code 2.1.296 with the company key: Claude Code's own `--output-format json` usage (2 input, 11 output, 26,382 cache write) equals the Gateway's record exactly. So does Codex 0.162.1's "tokens used 12,021" (11,888 in + 133 out on gpt-5-mini). The check against console.anthropic.com and platform.openai.com themselves is Michael's (key …2wAA: 2026-10-13, 17:43 to 17:51 UTC).
+- [x] **A budget stops Claude Code and Codex with a readable message and no retry loop.** Token budget "Mike daily (test)" (50,000 a day, already at 52,864). Claude Code printed `API Error: Request rejected (429) · Budget 'Mike daily (test)' used: 52,864 of 50,000 tokens. Resets Oct 14.` and Codex printed the same message (as a 400, below). Each made exactly one request, and each refusal is in the request log.
+- [x] **A local request shows an energy cost within 2 minutes:** 59 seconds after the request ended (Ollama on rin-den, streamed Chat Completion; `include_usage` was added and its chunk was hidden from the client).
+- Linux suite (rin-den, node:22 container): 834 of 834 server tests, 505 of 505 frontend tests, typecheck clean.
+- Known limit: Anthropic's 1-hour cache writes cost more than 5-minute ones, but a model has one cache-write price, so they are charged alike.
 
 Decisions made while building (2026-10-13; the first three are Michael's):
 
