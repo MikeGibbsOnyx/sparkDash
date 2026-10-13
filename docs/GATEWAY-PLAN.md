@@ -494,6 +494,18 @@ Acceptance on rin-den (2026-10-12), Gateway container as in docker-compose.yml (
 
 **Done when:** a test session's tokens match the provider console; a budget stops Claude Code and Codex with a readable message and no retry loop; a local request shows an energy cost within 2 minutes.
 
+Decisions made while building (2026-10-13; the first three are Michael's):
+
+- **Electricity price is USD.** The Settings price has only a currency symbol; the Gateway reads it as USD per kWh, and the Usage tab says so.
+- **A model with no price counts as $0** under USD budgets (allowed, not refused), shows **No price set**, and raises a finding on the Overview.
+- **The usage tap reads an inflated copy** of gzip, deflate, br or zstd bodies; the client's bytes are unchanged. The exception is a streamed Chat Completion that gets `include_usage`: its upstream request asks for `accept-encoding: identity`, because the extra chunk has to be found in the client's bytes. A successful response whose encoding can't be read is charged its reservation (fail closed).
+- `in_tok` never includes cached tokens (OpenAI and Gemini report them inside the prompt count; the Gateway subtracts them). Reasoning and thinking tokens are output. Token budgets count every token, cached input included. A cache price that isn't set falls back to the input price.
+- **The 8-in-flight cap applies while a budget covers the caller** (the threat it answers is budget bypass). It returns a retryable `429` (`x-should-retry: true`, `retry-after: 2`). Without a budget, the per-minute rate limit still applies.
+- A request is refused when spend + in-flight reservations + its own reservation would pass the limit, not only when spend has reached it. The message says how much is left and what the request could cost. OpenAI-format budget refusals use the error type `insufficient_quota`, as OpenAI does for spend that has run out.
+- Weeks start on Monday. Usage days and budget periods follow the Settings time zone, which the Observer pushes with the energy minutes (its own zone when Settings follows the browser). Changing the zone re-cuts the daily rollup.
+- Per-minute energy comes from the fleet energy tracker's minute buckets. The tracker has no public per-minute read, so the bridge reads its bucket map, and a bridge test runs against the real tracker so an upstream change is caught. A cluster head carries its workers' energy; only machines that host a model server are sent. Server tokens per minute are the growth in the servers' own prompt plus output counters. A request's tokens are spread over its duration, and its share is taken over the larger of the server's count and the Gateway's own.
+- "Token totals feed": local traffic is already in Token totals through the servers' counters, so the Gateway's part is shown on that page as a "Through the AI gateway" table (requests, people, tokens and energy cost per local model), not added to the totals a second time.
+
 ### Phase 4: Logging, guardrails and audit
 
 - [ ] Capture modes, body store, retention purge, JSONL export

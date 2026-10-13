@@ -358,6 +358,14 @@ One address for every AI tool on your team, on your own hardware. Provider keys 
 
 On the tailnet the key is the literal `sparkdash`; the Gateway uses your Tailscale identity. CI runners and tagged servers use a **gateway key** from the Access tab. Keys can also come from `GATEWAY_ANTHROPIC_API_KEY`, `GATEWAY_OPENAI_API_KEY` and `GATEWAY_GEMINI_API_KEY`. The Gateway listens on `127.0.0.1:5556` (`GATEWAY_BIND_HOST`, `GATEWAY_PORT`).
 
+### Usage, cost and budgets
+
+- **Every request is metered** from the provider's own token counts, read from a copy of the response as it streams (the client's bytes are unchanged). The one body change: a streamed Chat Completion gets `stream_options.include_usage`, and the extra usage chunk is removed before the client sees it. Turn that off per provider (or per local server) with **Count tokens on streams**.
+- **Prices**: set them per model on the Models tab, in US dollars per million tokens (input, output, cache read, cache write). There's no built-in price list; a model with **No price set** counts as $0. Each request keeps the price it was charged at. Own-subscription requests count tokens but show as **Subscription**.
+- **Local models** are costed from measured energy: each minute, the machine's Wh × the electricity price in **Settings → Energy** (read as USD per kWh), split across the Gateway's requests by token share. Direct use and idle time show as **unattributed**. Estimates, settled within about 2 minutes.
+- **Budgets** (Access tab): for everyone, a person, a group or a gateway key; per day, week (Monday start) or month in **Settings → Time zone**; in USD and/or tokens. A request that could take a budget past its limit (its maximum output at the output price) is refused before it leaves the machine with a `429` in the tool's own format, `x-should-retry: false` and a message naming the budget and when it resets. While a budget applies, each person may have at most 8 requests in flight.
+- **Usage tab**: spend and tokens by person, group, model, provider, client or Claude Code session, with a CSV export. **Grants** are edited on the Access tab, with a preview of who gains or loses access.
+
 ## Mobile PWA (install on a phone)
 
 sparkDash is a **PWA**: from a supported browser it installs to the home screen and runs fullscreen like a native app, with its own icon and no browser chrome.
