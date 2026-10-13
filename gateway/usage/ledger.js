@@ -141,10 +141,16 @@ export class Usage {
   /** The time zone changed: days are re-cut from the request log. */
   rebuildDaily() {
     const tz = this.timeZone();
+    const page = this.db.prepare("SELECT id, ts, identity, model, provider_id, cost_basis, client, in_tok, out_tok, cache_read_tok, cache_write_tok, cost_usd FROM requests WHERE id > ? ORDER BY id LIMIT 5000");
     this.db.transaction(() => {
       this.db.prepare("DELETE FROM usage_daily").run();
-      for (const r of this.db.prepare("SELECT ts, identity, model, provider_id, cost_basis, client, in_tok, out_tok, cache_read_tok, cache_write_tok, cost_usd FROM requests").iterate()) {
-        this._roll.run({ day: localDay(r.ts, tz), identity: r.identity, model: r.model ?? "", providerId: r.provider_id ?? "", costBasis: r.cost_basis ?? "", client: r.client ?? "", requests: 1, in: r.in_tok ?? 0, out: r.out_tok ?? 0, cacheRead: r.cache_read_tok ?? 0, cacheWrite: r.cache_write_tok ?? 0, costUsd: r.cost_usd ?? 0 });
+      for (let after = 0; ; ) {
+        const rows = page.all(after);
+        if (!rows.length) break;
+        for (const r of rows) {
+          this._roll.run({ day: localDay(r.ts, tz), identity: r.identity, model: r.model ?? "", providerId: r.provider_id ?? "", costBasis: r.cost_basis ?? "", client: r.client ?? "", requests: 1, in: r.in_tok ?? 0, out: r.out_tok ?? 0, cacheRead: r.cache_read_tok ?? 0, cacheWrite: r.cache_write_tok ?? 0, costUsd: r.cost_usd ?? 0 });
+        }
+        after = rows.at(-1).id;
       }
     })();
   }

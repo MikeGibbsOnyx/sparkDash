@@ -26,6 +26,11 @@ export class State {
     return this.get("personal_keys", true) === true;
   }
 
+  /** Budget periods and usage days: the Observer's Settings time zone, pushed with the energy minutes. */
+  get timeZone() {
+    return this.get("time_zone", "UTC");
+  }
+
   // ─── Audit ──────────────────────────────────────────────
   audit = (actor, action, target, detail) => {
     this.db.prepare("INSERT INTO audit (ts, actor, action, target, detail) VALUES (?, ?, ?, ?, ?)").run(this.now(), String(actor || "sparkDash"), action, target ?? null, detail ?? null);

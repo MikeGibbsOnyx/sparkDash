@@ -1,5 +1,6 @@
 // A fake provider for Gateway tests: Anthropic, OpenAI and Gemini shapes on one port.
 import http from "node:http";
+import zlib from "node:zlib";
 import { once } from "node:events";
 
 export const ANTHROPIC_SSE = [
@@ -12,6 +13,16 @@ export const ANTHROPIC_SSE = [
   'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}\n\n',
   'event: message_stop\ndata: {"type":"message_stop"}\n\n',
 ];
+
+/** A streamed Chat Completion; the usage-only chunk comes only when the request asked for it. */
+export function chatSse(includeUsage) {
+  return [
+    'data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"Hi"}}]' + (includeUsage ? ',"usage":null' : "") + "}\n\n",
+    'data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]' + (includeUsage ? ',"usage":null' : "") + "}\n\n",
+    ...(includeUsage ? ['data: {"id":"c1","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":40,"completion_tokens":6,"total_tokens":46,"prompt_tokens_details":{"cached_tokens":32}}}\n\n'] : []),
+    "data: [DONE]\n\n",
+  ];
+}
 
 /**
  * @param {{ keys: Record<string, string> }} opts  expected key per provider family
@@ -79,6 +90,31 @@ export async function startFakeUpstream({ keys }) {
         return res.socket.destroy();
       }
       return res.end();
+    }
+    if (url.pathname === "/v1/chat/completions" && body.stream) {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      for (const ev of chatSse(body.stream_options?.include_usage === true)) {
+        if (control.gate) await control.gate(0);
+        res.write(ev);
+      }
+      return res.end();
+    }
+    if (url.pathname === "/v1/chat/completions") {
+      if (control.gate) await control.gate(0);
+      return json(200, { id: "c2", object: "chat.completion", model, choices: [{ index: 0, message: { role: "assistant", content: "Hi" } }], usage: { prompt_tokens: 11, completion_tokens: 4, total_tokens: 15 } });
+    }
+    if (url.pathname === "/v1/responses") {
+      const out = Buffer.from(JSON.stringify({ id: "resp_1", object: "response", model, usage: { input_tokens: 25, output_tokens: 15, input_tokens_details: { cached_tokens: 5 } } }));
+      if (/gzip/.test(model) && /gzip/.test(req.headers["accept-encoding"] || "")) {
+        res.writeHead(200, { "content-type": "application/json", "content-encoding": "gzip" });
+        return res.end(zlib.gzipSync(out));
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      return res.end(out);
+    }
+    if (url.pathname === "/v1/messages") {
+      if (control.gate) await control.gate(0);
+      return json(200, { id: "msg_2", type: "message", model, content: [{ type: "text", text: "Hi" }], usage: { input_tokens: 20, output_tokens: 10, cache_read_input_tokens: 1000 } });
     }
     if (url.pathname.startsWith("/v1beta/models/")) {
       if (url.pathname.endsWith(":streamGenerateContent")) {

@@ -190,6 +190,12 @@ export class Budgets {
     return warn ? "warning" : "ok";
   }
 
+  /** The budgets that cover a caller, with this period's spend (the Connect page). */
+  forSubject(subject) {
+    const mine = new Set(this.applicable(subject).map((b) => b.id));
+    return this.list().filter((b) => mine.has(b.id));
+  }
+
   applicable(subject) {
     return this.db.prepare("SELECT * FROM budgets ORDER BY id").all().filter((b) => scopeMatches(b.scope, subject));
   }

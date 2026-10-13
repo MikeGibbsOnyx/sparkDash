@@ -10,6 +10,11 @@ import { classify, clientFromUserAgent, familyFor, sendError } from "./proxy/for
 import { outboundHeaders, presentedCredential } from "./proxy/headers.js";
 import { forward } from "./proxy/forward.js";
 import { createRateLimiter, crossOrigin } from "./security.js";
+import { isMetered } from "./usage/parse.js";
+import { createUsageTap } from "./usage/tap.js";
+import { createUsageChunkFilter, injectIncludeUsage } from "./usage/includeUsage.js";
+import { costOf, priceSnapshot, totalTokens } from "./usage/ledger.js";
+import { requestedMaxOutput } from "./policy/budgets.js";
 
 const STATIC_TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".woff2": "font/woff2", ".json": "application/json", ".ico": "image/x-icon", ".webmanifest": "application/manifest+json" };
 
@@ -20,12 +25,14 @@ const STATIC_TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascr
  * @param {import("./providers/registry.js").Providers} deps.providers
  * @param {import("./policy/grants.js").Grants} deps.grants
  * @param {import("./credentials/gatewayKeys.js").GatewayKeys} deps.keys
+ * @param {import("./usage/ledger.js").Usage} deps.usage
+ * @param {import("./policy/budgets.js").Budgets} deps.budgets
  * @param {(ip: string, port?: number) => Promise<object | null>} deps.whois
  * @param {import("undici").Agent} deps.agent
  * @param {(line: string) => void} [deps.log]
  */
 export function createPublicHandler(deps) {
-  const { config, state, providers, grants, keys, whois, agent } = deps;
+  const { config, state, providers, grants, keys, whois, agent, usage, budgets } = deps;
   const log = deps.log || ((line) => console.log(line));
   const allow = createRateLimiter(config.ratePerMinute);
 
@@ -129,11 +136,35 @@ export function createPublicHandler(deps) {
 
     const { provider, model } = hit;
     const ownLogin = provider.ownLogin && clientCreds.length > 0;
+    const costBasis = ownLogin ? "subscription" : provider.type === "local" ? "local" : "key";
+    const metered = isMetered(route.format, url.pathname);
+    const prices = costBasis === "key" ? priceSnapshot(model) : null;
+    const subject = { kind: who.kind, login: who.login, keyName: who.keyName ?? null, groups: who.groups };
+
+    // Budgets: refuse before anything leaves the machine.
+    const admission = metered ? budgets.admit({ subject, label: who.label, costBasis, priceOut: prices?.out ?? null, maxOutput: requestedMaxOutput(route.format, parsed) }) : { ok: true, ticket: null };
+    if (!admission.ok) {
+      return sendError(res, family, admission.status, admission.message, admission.retryable ? { "x-should-retry": "true", "retry-after": "2" } : {}, { quota: !admission.retryable });
+    }
+
     let outBody = body;
+    let sendParsed = parsed;
     let outPath = url.pathname;
     if (provider.type === "local" && model.upstream !== model.name) {
       // Local models are named <machine>/<model>; the server knows only <model>.
-      if (parsed) outBody = Buffer.from(JSON.stringify({ ...parsed, model: model.upstream }));
+      if (parsed) {
+        sendParsed = { ...parsed, model: model.upstream };
+        outBody = Buffer.from(JSON.stringify(sendParsed));
+      }
+    }
+    // The one body change: streamed Chat Completions report usage, and the extra chunk is hidden.
+    let filter = null;
+    if (metered && route.format === "openai-chat" && provider.injectUsage) {
+      const injected = injectIncludeUsage(outBody, sendParsed);
+      if (injected) {
+        outBody = injected;
+        filter = createUsageChunkFilter();
+      }
     }
     if (route.modelFrom === "path" && model.upstream !== modelName) outPath = outPath.replace(`/models/${encodeURIComponent(modelName)}:`, `/models/${encodeURIComponent(model.upstream)}:`);
     const query = new URLSearchParams(url.search);
@@ -146,38 +177,64 @@ export function createPublicHandler(deps) {
       ownLogin,
       bodyLength: outBody.length,
     });
+    // The hidden chunk has to be found in the bytes the client gets, so that stream comes uncompressed.
+    if (filter) headers["accept-encoding"] = "identity";
 
     const ts = Date.now();
-    const result = await forward({
-      res,
-      req,
-      url: target,
-      headers,
-      body: outBody,
-      agent,
-      onConnectError: (status, message) => sendError(res, family, status, `${message} Provider: ${provider.name}.`),
-    });
-    providers.markUsed(provider.id);
-    state.recordRequest({
-      ts,
-      identity: who.label,
-      via: who.via,
-      device: who.device,
-      client: clientFromUserAgent(req.headers["user-agent"]),
-      providerId: provider.id,
-      model: modelName,
-      format: route.format,
-      stream: route.stream ?? Boolean(parsed?.stream),
-      status: result.status,
-      latencyMs: result.latencyMs,
-      ttfbMs: result.ttfbMs,
-      costBasis: ownLogin ? "subscription" : provider.type === "local" ? "local" : "key",
-      partial: result.partial,
-      sessionId: req.headers["x-claude-code-session-id"] || null,
-      agentId: req.headers["x-claude-code-agent-id"] || null,
-      error: result.error ? redact(result.error, [secret]) : null,
-    });
-    if (result.error && result.error !== "client closed") log(`[gateway] ${who.label} ${modelName}: ${redact(result.error, [secret])}`);
+    const flight = usage.begin(provider.id, ts);
+    try {
+      const result = await forward({
+        res,
+        req,
+        url: target,
+        headers,
+        body: outBody,
+        agent,
+        filter,
+        tap: metered ? (_status, h) => createUsageTap({ format: route.format, headers: h }) : null,
+        onConnectError: (status, message) => sendError(res, family, status, `${message} Provider: ${provider.name}.`),
+      });
+      providers.markUsed(provider.id);
+
+      const read = result.tap ? await result.tap.end(!result.partial && !result.error) : null;
+      const u = read?.found ? read.usage : null;
+      const usageState = !metered ? "unmetered" : !read ? "none" : !read.readable ? "unreadable" : !read.found ? "none" : read.partial || result.partial ? "partial" : "ok";
+      let costUsd = costBasis === "key" && u ? costOf(u, prices) : null;
+      // An unreadable successful response is charged what it reserved, so a budget can't be slipped past.
+      if (costBasis === "key" && usageState === "unreadable" && result.status < 400 && prices) costUsd = (requestedMaxOutput(route.format, parsed) * prices.out) / 1e6;
+      usage.record({
+        ts,
+        endTs: ts + Math.round(result.latencyMs),
+        identity: who.label,
+        via: who.via,
+        kind: who.kind,
+        keyName: who.keyName ?? null,
+        groups: who.groups,
+        device: who.device,
+        client: clientFromUserAgent(req.headers["user-agent"]),
+        providerId: provider.id,
+        model: modelName,
+        format: route.format,
+        stream: route.stream ?? Boolean(parsed?.stream),
+        status: result.status,
+        latencyMs: result.latencyMs,
+        ttfbMs: result.ttfbMs,
+        usage: u,
+        costUsd,
+        costBasis,
+        priceSnapshot: prices,
+        partial: result.partial || Boolean(read?.partial && read?.found),
+        usageState,
+        sessionId: req.headers["x-claude-code-session-id"] || null,
+        agentId: req.headers["x-claude-code-agent-id"] || null,
+        error: result.error ? redact(result.error, [secret]) : null,
+      });
+      if (metered) budgets.add(subject, ts, { usd: costUsd ?? 0, tokens: totalTokens(u), costBasis });
+      if (result.error && result.error !== "client closed") log(`[gateway] ${who.label} ${modelName}: ${redact(result.error, [secret])}`);
+    } finally {
+      usage.end(flight);
+      budgets.release(admission.ticket);
+    }
   }
 
   // ─── /me: the Connect page's data ───────────────────────
@@ -197,10 +254,15 @@ export function createPublicHandler(deps) {
         models: grantedModels(who).map((m) => ({ name: m.name, provider: m.providerType })),
         lastRequest: last,
         personalKeys: canHaveKeys,
+        budgets: budgets.forSubject({ kind: who.kind, login: who.login, keyName: who.keyName ?? null, groups: who.groups }),
       });
     }
     if (url.pathname === "/me/usage" && req.method === "GET") {
-      return send(200, { since: Date.now() - 30 * 86_400_000, byModel: state.usageFor(who.label, Date.now() - 30 * 86_400_000) });
+      const u = usage.summary({ range: "30d", groupBy: "model", identity: who.label });
+      return send(200, {
+        since: u.since,
+        byModel: u.rows.map((r) => ({ model: r.key, requests: r.requests, inTok: r.inTok + r.cacheReadTok + r.cacheWriteTok, outTok: r.outTok, costUsd: r.cloudUsd + r.localUsd, subscriptionRequests: r.subscriptionRequests })),
+      });
     }
     if (url.pathname === "/me/keys") {
       if (!canHaveKeys) return send(403, { error: who.via === "key" ? "Personal keys are managed from a device on the tailnet." : "Personal gateway keys are turned off. Ask an Admin." });

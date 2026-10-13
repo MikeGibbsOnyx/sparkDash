@@ -60,6 +60,96 @@ export class Grants {
   allowsModel(who, modelName) {
     return this.forCaller(who).some((g) => g.modelPatterns.some((p) => globMatch(p, modelName)));
   }
+
+  // ─── Editing ────────────────────────────────────────────
+  #validate(b) {
+    const name = String(b.name || "").trim().slice(0, 80);
+    if (!name) throw new GrantError(400, "Give the grant a name.");
+    const list = (v) => (Array.isArray(v) ? v : String(v || "").split(/[,\n]/)).map((x) => String(x).trim()).filter(Boolean).slice(0, 200);
+    const selectors = list(b.selectors);
+    const modelPatterns = list(b.modelPatterns);
+    const mcpPatterns = list(b.mcpPatterns ?? []);
+    if (!selectors.length) throw new GrantError(400, "Say who the grant is for: *, a login, group:<name>, tag:<name>, key:<name> or local.");
+    for (const sel of selectors) {
+      if (!(sel === "*" || sel === "local" || /^(group|key):.+/.test(sel) || /^tag:[\w-]+$/.test(sel) || /^[^\s:]+$/.test(sel))) {
+        throw new GrantError(400, `"${sel}" isn't a selector. Use *, a login, group:<name>, tag:<name>, key:<name> or local.`);
+      }
+    }
+    if (!modelPatterns.length && !mcpPatterns.length) throw new GrantError(400, "Add at least one model pattern, such as claude-* or spark-1/*.");
+    return { name, selectors, modelPatterns, mcpPatterns };
+  }
+
+  create(b, actor) {
+    const v = this.#validate(b);
+    const id = Number(
+      this.db
+        .prepare("INSERT INTO grants (name, selectors, model_patterns, mcp_patterns, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
+        .run(v.name, JSON.stringify(v.selectors), JSON.stringify(v.modelPatterns), JSON.stringify(v.mcpPatterns), actor, this.now()).lastInsertRowid
+    );
+    this.audit(actor, "grant.created", v.name, `${v.selectors.join(", ")} -> ${v.modelPatterns.join(", ")}`);
+    return this.list().find((g) => g.id === id);
+  }
+
+  update(id, b, actor) {
+    const old = this.list().find((g) => g.id === id);
+    if (!old) throw new GrantError(404, "That grant no longer exists.");
+    const v = this.#validate({ ...old, ...b });
+    this.db
+      .prepare("UPDATE grants SET name = ?, selectors = ?, model_patterns = ?, mcp_patterns = ?, updated_by = ?, updated_at = ? WHERE id = ?")
+      .run(v.name, JSON.stringify(v.selectors), JSON.stringify(v.modelPatterns), JSON.stringify(v.mcpPatterns), actor, this.now(), id);
+    this.audit(actor, "grant.changed", v.name, `${v.selectors.join(", ")} -> ${v.modelPatterns.join(", ")}`);
+    return this.list().find((g) => g.id === id);
+  }
+
+  remove(id, actor) {
+    const old = this.list().find((g) => g.id === id);
+    if (!old) throw new GrantError(404, "That grant no longer exists.");
+    this.db.prepare("DELETE FROM grants WHERE id = ?").run(id);
+    this.audit(actor, "grant.removed", old.name, null);
+  }
+
+  /**
+   * Who would gain or lose which models if a grant were saved (or removed): compares access
+   * now with access after, for every person in the directory and every gateway key.
+   * @param {{ id?: number | null, draft?: object | null }} change  draft null = remove grant `id`
+   * @param {{ directory: object, keys: Array<{ name: string, actsAs: string | null, access: string | null, state: string }>, models: string[] }} world
+   */
+  preview({ id = null, draft = null }, { directory, keys, models }) {
+    const before = this.list();
+    let after = before.filter((g) => g.id !== id);
+    if (draft) {
+      const v = this.#validate(draft);
+      after = [...after, { id: id ?? -1, ...v }];
+    }
+    const callers = [
+      ...(directory?.people || []).map((p) => ({ label: p.login, who: { kind: "person", login: p.login, tags: [] } })),
+      ...keys.filter((k) => k.state !== "revoked" && k.state !== "expired" && !k.actsAs).map((k) => {
+        const access = String(k.access || "");
+        return { label: `key:${k.name}`, who: { kind: "key", login: null, keyName: k.name, tags: [], onlyGrantId: access.startsWith("grant:") ? Number(access.slice(6)) : null, extraGroups: access.startsWith("group:") ? [access.slice(6)] : [] } };
+      }),
+    ];
+    const access = (grants, who) => {
+      const mine = who.onlyGrantId != null ? grants.filter((g) => g.id === who.onlyGrantId) : grants.filter((g) => g.selectors.some((s) => selectorMatches(s, who)));
+      return new Set(models.filter((m) => mine.some((g) => g.modelPatterns.some((p) => globMatch(p, m)))));
+    };
+    const changes = [];
+    for (const c of callers) {
+      c.who.groups = [...new Set([...groupsFor(directory, c.who), ...(c.who.extraGroups || [])])];
+      const a = access(before, c.who);
+      const b = access(after, c.who);
+      const gains = [...b].filter((m) => !a.has(m));
+      const losses = [...a].filter((m) => !b.has(m));
+      if (gains.length || losses.length) changes.push({ caller: c.label, gains, losses });
+    }
+    return { changes };
+  }
+}
+
+export class GrantError extends Error {
+  constructor(status, message) {
+    super(message);
+    this.status = status;
+  }
 }
 
 /** Groups a caller belongs to, from the Observer's directory snapshot. */

@@ -15,6 +15,14 @@ export class ProviderError extends Error {
 }
 
 /** "Spark 1" -> "spark-1": the machine part of a local model name. */
+function options(p) {
+  try {
+    return JSON.parse(p?.options || "{}") || {};
+  } catch {
+    return {};
+  }
+}
+
 export function machineSlug(name) {
   return String(name || "local").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "local";
 }
@@ -90,6 +98,7 @@ export class Providers {
       ownLogin: Boolean(p.own_login),
       ownLoginCapable: Boolean(PROVIDER_TYPES[p.type]?.ownLoginCapable),
       enabled: Boolean(p.enabled),
+      injectUsage: options(p).injectUsage !== false,
       modelCount: counts.total || 0,
       modelsEnabled: counts.enabled || 0,
     };
@@ -115,6 +124,9 @@ export class Providers {
         providerType: m.provider_type,
         enabled: Boolean(m.enabled),
         usable: Boolean(m.enabled && m.provider_enabled),
+        prices: { in: m.price_in, out: m.price_out, cacheRead: m.price_cache_read, cacheWrite: m.price_cache_write },
+        // Local models are costed from energy; own-login requests are Subscription. Only cloud keys need prices.
+        needsPrice: m.provider_type !== "local",
       }));
   }
 
@@ -215,7 +227,7 @@ export class Providers {
     this.audit(actor, "provider.removed", p.name, `…${p.key_last4}`);
   }
 
-  update(id, { ownLogin, enabled }, actor) {
+  update(id, { ownLogin, enabled, injectUsage }, actor) {
     const p = this.row(id);
     if (!p) throw new ProviderError(404, "That provider no longer exists.");
     if (ownLogin !== undefined) {
@@ -227,6 +239,10 @@ export class Providers {
       this.db.prepare("UPDATE providers SET enabled = ? WHERE id = ?").run(enabled ? 1 : 0, id);
       this.audit(actor, "provider.enabled", p.name, enabled ? "on" : "off");
     }
+    if (injectUsage !== undefined) {
+      this.db.prepare("UPDATE providers SET options = ? WHERE id = ?").run(JSON.stringify({ ...options(p), injectUsage: Boolean(injectUsage) }), id);
+      this.audit(actor, "provider.stream_usage", p.name, injectUsage ? "on" : "off");
+    }
     return this.present(this.row(id));
   }
 
@@ -235,6 +251,37 @@ export class Providers {
     if (!m) throw new ProviderError(404, "That model is no longer listed.");
     this.db.prepare("UPDATE models SET enabled = ? WHERE id = ?").run(enabled ? 1 : 0, modelId);
     this.audit(actor, "model.enabled", m.name, enabled ? "on" : "off");
+  }
+
+  /**
+   * Set a model's prices, in USD per million tokens. null clears one. Requests already made keep
+   * the price they were charged at.
+   * @param {{ in?: number | null, out?: number | null, cacheRead?: number | null, cacheWrite?: number | null }} prices
+   */
+  setModelPrices(modelId, prices, actor) {
+    const m = this.db.prepare("SELECT * FROM models WHERE id = ?").get(modelId);
+    if (!m) throw new ProviderError(404, "That model is no longer listed.");
+    const col = { in: "price_in", out: "price_out", cacheRead: "price_cache_read", cacheWrite: "price_cache_write" };
+    const next = {};
+    for (const [k, c] of Object.entries(col)) {
+      if (!(k in (prices || {}))) {
+        next[c] = m[c];
+        continue;
+      }
+      const v = prices[k];
+      if (v === null || v === "") next[c] = null;
+      else {
+        const n = Number(v);
+        if (!Number.isFinite(n) || n < 0 || n > 10_000) throw new ProviderError(400, "A price is dollars per million tokens: a number from 0 to 10,000.");
+        next[c] = n;
+      }
+    }
+    if ((next.price_in == null) !== (next.price_out == null)) throw new ProviderError(400, "Set both the input and the output price, or neither.");
+    this.db
+      .prepare("UPDATE models SET price_in = @price_in, price_out = @price_out, price_cache_read = @price_cache_read, price_cache_write = @price_cache_write WHERE id = @id")
+      .run({ ...next, id: modelId });
+    const fmt = (v) => (v == null ? "-" : `$${v}`);
+    this.audit(actor, "model.price", m.name, `in ${fmt(next.price_in)}, out ${fmt(next.price_out)}, cache read ${fmt(next.price_cache_read)}, cache write ${fmt(next.price_cache_write)} per million`);
   }
 
   /** Keep the model list in step with the provider; existing switches keep their state. */
@@ -260,7 +307,7 @@ export class Providers {
   resolve(name, format) {
     const rows = this.db
       .prepare(
-        `SELECT m.*, p.type, p.base_url, p.name AS provider_name, p.own_login, p.id AS pid
+        `SELECT m.*, p.type, p.base_url, p.name AS provider_name, p.own_login, p.id AS pid, p.options AS provider_options
            FROM models m JOIN providers p ON p.id = m.provider_id
           WHERE m.name = ? AND m.enabled = 1 AND p.enabled = 1`
       )
@@ -274,8 +321,8 @@ export class Providers {
       return { error: "format", message: `${name} is served by ${r.provider_name}, which doesn't speak this API format. Use that provider's own format for this model.` };
     }
     return {
-      provider: { id: r.pid, type: r.type, baseUrl: r.base_url, name: r.provider_name, ownLogin: Boolean(r.own_login) },
-      model: { id: r.id, name: r.name, upstream: r.upstream_name },
+      provider: { id: r.pid, type: r.type, baseUrl: r.base_url, name: r.provider_name, ownLogin: Boolean(r.own_login), injectUsage: options({ options: r.provider_options }).injectUsage !== false },
+      model: { id: r.id, name: r.name, upstream: r.upstream_name, price_in: r.price_in, price_out: r.price_out, price_cache_read: r.price_cache_read, price_cache_write: r.price_cache_write },
     };
   }
 
