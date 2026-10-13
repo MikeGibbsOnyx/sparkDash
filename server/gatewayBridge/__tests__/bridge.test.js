@@ -12,6 +12,8 @@ import { Directory } from "../../access/directory.js";
 import { createGatewayBridge, describeEvent } from "../index.js";
 import { parseServeStatus } from "../publish.js";
 import { isolatedConfigEnv } from "../../__tests__/isolatedEnv.js";
+import { FleetEnergyTracker } from "../../energy/FleetEnergyTracker.js";
+import { createEnergyPusher, minuteWh } from "../energy.js";
 
 function fakeClient() {
   const calls = [];
@@ -154,4 +156,80 @@ test("Observer -> Gateway: admin calls go through with roles applied; events lan
   // The Gateway itself knows the people the Observer pushed.
   const gwMe = await (await fetch(`http://127.0.0.1:${gwPort}/me`, { headers: auditor })).json();
   assert.equal(gwMe.who.role, "auditor");
+});
+
+// ─── Energy for local cost ────────────────────────────────
+
+test("energy push: each closed minute, a head carries its worker's energy, tokens from the server counters", async () => {
+  let t = Date.parse("2026-10-13T15:00:10Z");
+  const m0 = Date.parse("2026-10-13T15:00:00Z");
+  let out = 10_000;
+  let prompt = 50_000;
+  const snaps = () => [
+    { id: "h", name: "Spark 1", role: "head", llmPorts: [8000], metrics: { llm: [{ port: 8000, available: true, models: ["qwen"], totalOutputTokens: out, totalPromptTokens: prompt }] } },
+    { id: "w", name: "Spark 2", role: "worker", llmPorts: [], metrics: { llm: [] } },
+    { id: "x", name: "Mac", role: "standalone", llmPorts: [], metrics: { llm: [] } },
+  ];
+  const tracker = { _buckets: new Map([[m0, { nodeWh: { h: 2, w: 1.5, x: 9 }, nodeCoverageMs: { h: 60_000, w: 60_000, x: 60_000 } }]]) };
+  const calls = [];
+  const client = { call: async (method, p, body) => (calls.push({ method, p, body }), { status: 200, body: {} }) };
+  const pusher = createEnergyPusher({
+    tracker,
+    orderedSnapshots: snaps,
+    registry: { getSpark: (id) => ({ w: { workerHeadId: "h" } })[id] || {} },
+    getSettings: () => ({ energyPricePerKwh: 0.15, timeZone: "America/Toronto" }),
+    client,
+    now: () => t,
+  });
+  pusher.sample();
+  t += 15_000;
+  out += 300;
+  prompt += 700;
+  pusher.sample();
+  t = m0 + 60_000 + 6_000; // the minute has closed
+  await pusher.push();
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].p, "/internal/energy");
+  assert.equal(calls[0].body.rate, 0.15);
+  assert.equal(calls[0].body.timeZone, "America/Toronto");
+  // The Mac runs no model server, so its energy isn't AI cost.
+  assert.deepEqual(calls[0].body.minutes, [{ machine: "Spark 1", minute: m0, wh: 3.5, serverTokens: 1000 }]);
+  await pusher.push();
+  assert.deepEqual(calls[1].body.minutes, [], "a minute is sent once");
+});
+
+test("energy push: minutes wait while the Gateway is down", async () => {
+  let t = Date.parse("2026-10-13T15:00:30Z");
+  const m0 = Date.parse("2026-10-13T15:00:00Z");
+  const tracker = { _buckets: new Map([[m0, { nodeWh: { h: 2 }, nodeCoverageMs: { h: 60_000 } }]]) };
+  let up = false;
+  const sent = [];
+  const pusher = createEnergyPusher({
+    tracker,
+    orderedSnapshots: () => [{ id: "h", name: "Spark 1", llmPorts: [8000], metrics: { llm: [{ port: 8000, available: true, models: ["q"] }] } }],
+    registry: { getSpark: () => ({}) },
+    getSettings: () => ({ energyPricePerKwh: null, timeZone: "" }),
+    client: { call: async (_m, _p, body) => (up ? (sent.push(body), { status: 200, body: {} }) : Promise.reject(new Error("down"))) },
+    now: () => t,
+  });
+  t = m0 + 70_000;
+  await pusher.push();
+  assert.equal(pusher.queued, 1);
+  up = true;
+  t += 60_000;
+  await pusher.push();
+  assert.equal(pusher.queued, 0);
+  assert.equal(sent[0].minutes[0].wh, 2);
+  assert.equal(sent[0].rate, null, "no electricity price set");
+  assert.ok(sent[0].timeZone, "the Observer's own zone when Settings follows the browser");
+});
+
+test("energy push reads the real fleet energy tracker's minute buckets", () => {
+  const start = Date.parse("2026-10-13T15:00:00Z");
+  const tracker = new FleetEnergyTracker({ nodeIds: ["h"], load: false, setIntervalFn: null });
+  const snap = { id: "h", role: "standalone", online: true, telemetryFresh: true, metrics: { gpu: { power: { draw: 100 } }, cpu: { usage: 50 } } };
+  for (let s = 0; s <= 60; s += 2) tracker.record([snap], start + s * 1000);
+  const wh = minuteWh(tracker, start);
+  assert.ok(wh && wh.h > 1.5 && wh.h < 3, `about 2.6 Wh for a minute at ~158 W, got ${JSON.stringify(wh)}`);
+  tracker.close();
 });
