@@ -51,6 +51,22 @@ export function describeEvent(e) {
       return { severity: "warn", message: `${who} removed grant ${t}` };
     case "model.price":
       return { severity: "info", message: `${who} set the price of ${t}: ${d}` };
+    case "content.viewed":
+      return { severity: "warn", message: `${who} viewed the captured content of ${t} (${d})` };
+    case "capture.mode":
+      return { severity: d === "full capture on" ? "warn" : "info", message: d === "full capture on" ? `${who} turned on full capture: prompts and responses are now stored` : `${who} turned off full capture (metadata only)` };
+    case "capture.retention":
+      return { severity: "info", message: `${who} set retention: ${d}` };
+    case "guardrail.mode":
+      return { severity: "info", message: `${who} set the ${t} guardrail to ${d}` };
+    case "guardrail.detector_added":
+      return { severity: "info", message: `${who} added the guardrail ${t} (${d})` };
+    case "guardrail.detector_removed":
+      return { severity: "info", message: `${who} removed the guardrail ${t}` };
+    case "guardrail.blocked_tools":
+      return { severity: "info", message: `${who} set blocked tools: ${d}` };
+    case "guardrail.hook":
+      return { severity: "info", message: d === "off" ? `${who} removed the pre-request hook` : `${who} set the pre-request hook to ${t} (${d})` };
     default:
       return { severity: "info", message: `${who}: ${e.action}${t ? ` ${t}` : ""}${d ? ` (${d})` : ""}` };
   }

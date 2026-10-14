@@ -18,6 +18,9 @@ import { Grants } from "./policy/grants.js";
 import { Budgets } from "./policy/budgets.js";
 import { Usage } from "./usage/ledger.js";
 import { Energy } from "./usage/energy.js";
+import { Guardrails } from "./guardrails/index.js";
+import { CaptureStore } from "./logging/capture.js";
+import { checkOutboundUrl } from "./security.js";
 import { createUpstreamAgent } from "./proxy/forward.js";
 import { createPublicHandler } from "./app.js";
 import { createInternalHandler } from "./internal/server.js";
@@ -44,11 +47,13 @@ export function createGateway(config, opts = {}) {
     usage,
     onCost: (row, usd) => budgets.add({ kind: row.kind, login: row.kind === "person" ? row.identity : null, keyName: row.key_name, groups: JSON.parse(row.groups || "[]") }, row.ts, { usd, tokens: 0, costBasis: "local" }),
   });
+  const guardrails = new Guardrails(db, { state, audit: state.audit, fetchImpl: opts.fetchImpl, checkUrl: opts.checkUrl || checkOutboundUrl });
+  const capture = new CaptureStore({ dataDir: config.dataDir, state, db, audit: state.audit });
   const whois = opts.whois || createWhois({ socketPath: config.tailscaledSocket, cli: null });
   const agent = createUpstreamAgent(config);
   const version = JSON.parse(fs.readFileSync(path.join(config.root, "package.json"), "utf8")).version;
-  const publicHandler = createPublicHandler({ config, state, providers, grants, keys, whois, agent, usage, budgets, log: opts.log });
-  return { db, state, providers, grants, keys, usage, budgets, energy, agent, version, publicHandler };
+  const publicHandler = createPublicHandler({ config, state, providers, grants, keys, whois, agent, usage, budgets, guardrails, capture, log: opts.log });
+  return { db, state, providers, grants, keys, usage, budgets, energy, guardrails, capture, agent, version, publicHandler };
 }
 
 /** Create the internal socket and its secret (0600), readable by the Observer. */
@@ -111,6 +116,17 @@ export async function main(env = process.env) {
     }
   }, 15_000);
   settler.unref();
+  // Retention: content and request records past their age are deleted hourly.
+  const purge = () => {
+    try {
+      const r = gw.capture.purge();
+      if (r.bodies || r.metadata) console.log(`[gateway] retention: removed ${r.bodies} stored bodies and ${r.metadata} request records`);
+    } catch (err) {
+      console.error(`[gateway] retention purge failed: ${err.message}`);
+    }
+  };
+  purge();
+  setInterval(purge, 3_600_000).unref();
   console.log(`[gateway] internal API on ${config.socketPath}; gateway ${gw.state.enabled ? "on" : "off (turn it on from the AI Gateway page)"}`);
   const stop = () => {
     pub.close();

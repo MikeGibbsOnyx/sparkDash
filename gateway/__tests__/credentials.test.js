@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import zlib from "node:zlib";
 import { decrypt, encrypt, keyFromString } from "../../shared/crypto.js";
 import { redact } from "../../shared/redact.js";
 import { createVault, loadVaultKey } from "../credentials/vault.js";
@@ -178,6 +179,9 @@ test("no secret in any response, log, the database file or the audit trail", asy
   const oauth = "sk-ant-oat01-PLANTEDoauthTOKEN0000000000000000000000000000000000";
   const gwKey = (await g.admin("POST", "/keys", { name: "planted" })).json().key;
   g.seenResponses.pop(); // the create response is the one place a gateway key is shown
+  // Full capture on, and every guardrail flagging: bodies, hits and exports are grepped too.
+  await g.admin("PATCH", "/privacy/capture", { mode: "full" });
+  for (const id of ["email", "phone", "card", "ssn", "sin", "secret"]) await g.admin("PATCH", `/guardrails/detectors/${id}`, { mode: "flag" });
 
   const S = { "tailscale-user-login": "sam@onyx.test", "content-type": "application/json" };
   const hits = [
@@ -197,6 +201,8 @@ test("no secret in any response, log, the database file or the audit trail", asy
   await g.internalCall("POST", "/internal/energy", { timeZone: "America/Toronto", rate: 0.1, minutes: [{ machine: "spark-1", minute: Date.now() - 600_000, wh: 1, serverTokens: 5 }] });
   for (const p of ["/budgets", "/usage?range=all&groupBy=person", "/usage?range=all&groupBy=session", "/usage/daily?range=all", "/usage/energy?range=all", "/usage/local"]) await g.admin("GET", p);
   await g.admin("POST", "/grants/preview", { draft: { name: "x", selectors: ["*"], modelPatterns: ["*"] } });
+  for (const p of ["/privacy", "/requests?limit=500", `/export?from=0&to=${Date.now() + 1000}`]) await g.admin("GET", p);
+  for (const r of g.gw.db.prepare("SELECT id FROM requests WHERE body_path IS NOT NULL").all()) await g.admin("GET", `/requests/${r.id}/content`);
   for (const p of ["/status", "/providers", "/models", "/keys", "/grants", "/local-servers", "/settings"]) await g.admin("GET", p);
   for (const p of g.gw.providers.list()) {
     await g.admin("POST", `/providers/${p.id}/test`);
@@ -207,6 +213,10 @@ test("no secret in any response, log, the database file or the audit trail", asy
   await g.internalCall("GET", "/internal/events?since=0");
 
   const everything = [...g.seenResponses, ...g.logs, JSON.stringify(g.gw.db.prepare("SELECT * FROM audit").all()), JSON.stringify(g.gw.db.prepare("SELECT * FROM requests").all()), JSON.stringify(g.gw.db.prepare("SELECT * FROM usage_daily").all())].join("\n");
+  const bodiesDir = path.join(g.dataDir, "bodies");
+  const bodies = fs.existsSync(bodiesDir) ? fs.readdirSync(bodiesDir).map((f) => zlib.gunzipSync(fs.readFileSync(path.join(bodiesDir, f))).toString()) : [];
+  assert.ok(bodies.length > 0, "full capture stored bodies");
+  for (const [name, secret] of Object.entries({ ...KEYS, oauth, gwKey })) assert.equal(bodies.join("\n").includes(secret), false, `${name} appears in a stored body`);
   g.gw.db.pragma("wal_checkpoint(TRUNCATE)");
   const dbBytes = fs.readFileSync(path.join(g.dataDir, "gateway.db")).toString("latin1");
   for (const [name, secret] of Object.entries({ ...KEYS, oauth, gwKey })) {

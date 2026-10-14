@@ -88,13 +88,29 @@ export function createSseReader(onEvent) {
  * @param {Record<string, unknown>} p.headers  upstream response headers
  * @returns {{ push: (chunk: Buffer) => void, end: (complete: boolean) => Promise<{ usage: import("./parse.js").Usage, found: boolean, readable: boolean, partial: boolean }> }}
  */
-export function createUsageTap({ format, headers }) {
+export function createUsageTap({ format, headers, capture = 0 }) {
   const type = String(headers?.["content-type"] || "").toLowerCase();
   const sse = type.includes("text/event-stream");
   const dec = decoderFor(headers?.["content-encoding"]);
   let usage = EMPTY_USAGE;
   let readable = dec.ok;
   let finished = Promise.resolve();
+
+  // Full capture keeps the decoded response too, up to `capture` bytes.
+  const kept = [];
+  let keptBytes = 0;
+  let keptTruncated = false;
+  const keep = (buf) => {
+    if (!capture || keptTruncated) return;
+    if (keptBytes + buf.length > capture) {
+      kept.push(buf.subarray(0, capture - keptBytes));
+      keptBytes = capture;
+      keptTruncated = true;
+      return;
+    }
+    kept.push(buf);
+    keptBytes += buf.length;
+  };
 
   let consume;
   let finishParse;
@@ -103,13 +119,14 @@ export function createUsageTap({ format, headers }) {
       const u = usageFromEvent(format, event, data);
       if (u) usage = mergeUsage(usage, u);
     });
-    consume = (buf) => reader.push(buf);
+    consume = (buf) => (keep(buf), reader.push(buf));
     finishParse = () => reader.end();
   } else {
     const chunks = [];
     let size = 0;
     let tooBig = false;
     consume = (buf) => {
+      keep(buf);
       if (tooBig) return;
       size += buf.length;
       if (size > MAX_BODY_BYTES) {
@@ -167,7 +184,7 @@ export function createUsageTap({ format, headers }) {
       // Usage that didn't fully arrive is "partial": a stream cut short, or one whose final
       // usage report never came.
       const partial = !complete || (found && format === "anthropic" && sse && usage.out == null);
-      return { usage, found, readable, partial };
+      return { usage, found, readable, partial, captured: capture ? Buffer.concat(kept) : null, capturedTruncated: keptTruncated };
     },
   };
 }

@@ -129,7 +129,7 @@ export const MIGRATIONS = [
    ALTER TABLE requests ADD COLUMN key_name TEXT;
    ALTER TABLE requests ADD COLUMN groups TEXT NOT NULL DEFAULT '[]';
    ALTER TABLE requests ADD COLUMN end_ts INTEGER;
-   -- ok | partial | none (no usage in the response) | unreadable | unmetered (count_tokens) | refused (budget)
+   -- ok | partial | none (no usage in the response) | unreadable | unmetered (count_tokens) | refused (budget) | blocked (guardrail)
    ALTER TABLE requests ADD COLUMN usage_state TEXT;
    CREATE INDEX requests_local ON requests(provider_id, end_ts) WHERE cost_basis = 'local';
    -- One row per local day (Settings time zone) and dimension; rebuilt if the zone changes.
@@ -176,6 +176,20 @@ export const MIGRATIONS = [
      PRIMARY KEY (machine, minute)
    );
    CREATE INDEX energy_unsettled ON energy_minutes(settled, minute);`,
+  // Phase 4: logging, guardrails and audit.
+  `-- Allowlisted request headers (User-Agent, anthropic-version, anthropic-beta, Claude Code IDs).
+   ALTER TABLE requests ADD COLUMN headers TEXT;
+   CREATE INDEX requests_body ON requests(ts) WHERE body_path IS NOT NULL;
+   -- Admins' regex detectors (the built-in ones are code; their modes are a setting).
+   CREATE TABLE detectors (
+     id INTEGER PRIMARY KEY,
+     name TEXT NOT NULL,
+     pattern TEXT NOT NULL,
+     flags TEXT NOT NULL DEFAULT '',
+     mode TEXT NOT NULL DEFAULT 'flag',
+     updated_by TEXT,
+     updated_at INTEGER NOT NULL
+   );`,
 ];
 
 export function openGatewayDb(dataDir) {
