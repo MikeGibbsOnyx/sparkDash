@@ -190,6 +190,27 @@ export const MIGRATIONS = [
      updated_by TEXT,
      updated_at INTEGER NOT NULL
    );`,
+  // Phase 5: MCP proxy.
+  `CREATE TABLE mcp_servers (
+     id INTEGER PRIMARY KEY,
+     name TEXT NOT NULL UNIQUE,
+     url TEXT NOT NULL,
+     enabled INTEGER NOT NULL DEFAULT 1,
+     status TEXT NOT NULL DEFAULT 'not_tested',
+     last_error TEXT,
+     last_tested_at INTEGER,
+     tools TEXT NOT NULL DEFAULT '[]',
+     tools_at INTEGER,
+     header_name TEXT,
+     header_last4 TEXT,
+     added_by TEXT,
+     added_at INTEGER NOT NULL
+   );
+   -- The credential header's value, encrypted. One shared credential per server.
+   CREATE TABLE mcp_secrets (
+     server_id INTEGER PRIMARY KEY REFERENCES mcp_servers(id) ON DELETE CASCADE,
+     ciphertext TEXT NOT NULL
+   );`,
 ];
 
 export function openGatewayDb(dataDir) {

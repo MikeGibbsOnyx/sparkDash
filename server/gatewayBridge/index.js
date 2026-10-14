@@ -65,6 +65,14 @@ export function describeEvent(e) {
       return { severity: "info", message: `${who} removed the guardrail ${t}` };
     case "guardrail.blocked_tools":
       return { severity: "info", message: `${who} set blocked tools: ${d}` };
+    case "mcp.server_added":
+      return { severity: "info", message: `${who} added the MCP server ${t} (${d})` };
+    case "mcp.server_removed":
+      return { severity: "warn", message: `${who} removed the MCP server ${t}` };
+    case "mcp.server_enabled":
+      return { severity: "info", message: `${who} turned ${d} the MCP server ${t}` };
+    case "mcp.credential_replaced":
+      return { severity: "info", message: `${who} replaced the credential for the MCP server ${t}` };
     case "guardrail.hook":
       return { severity: "info", message: d === "off" ? `${who} removed the pre-request hook` : `${who} set the pre-request hook to ${t} (${d})` };
     default:

@@ -26,11 +26,12 @@ function equal(a, b) {
  * @param {import("../usage/energy.js").Energy} deps.energy
  * @param {import("../guardrails/index.js").Guardrails} deps.guardrails
  * @param {import("../logging/capture.js").CaptureStore} deps.capture
+ * @param {import("../mcp/servers.js").McpServers} deps.mcp
  * @param {ReturnType<import("../config.js").loadConfig>} deps.config
  * @param {string} deps.version
  */
 export function createInternalHandler(deps) {
-  const { secret, state, providers, grants, keys, usage, budgets, energy, guardrails, capture, config, version } = deps;
+  const { secret, state, providers, grants, keys, usage, budgets, energy, guardrails, capture, mcp, config, version } = deps;
   const RANGE_MS = { "24h": 86_400_000, "7d": 7 * 86_400_000, "30d": 30 * 86_400_000, all: null };
   const sinceFor = (range) => {
     const span = RANGE_MS[range] === undefined ? RANGE_MS["7d"] : RANGE_MS[range];
@@ -69,6 +70,9 @@ export function createInternalHandler(deps) {
       if (!s.reachable) out.push({ id: `local-unreachable:${s.id}`, severity: "info", title: `The model server on ${s.machine} :${s.port} can't be served`, detail: s.fix, hint: s.fix });
     }
     out.push(...budgets.findings());
+    for (const s of mcp.list()) {
+      if (s.enabled && s.status === "Failing") out.push({ id: `mcp-failing:${s.id}`, severity: "warn", title: `MCP server ${s.name} isn't answering`, detail: s.lastError || "", hint: "Open the MCP tab and test it, or replace its credential." });
+    }
     if (capture.mode === "full") out.push({ id: "capture-full", severity: "info", title: "Full capture is on", detail: `Prompts and responses are stored for ${capture.retention().bodiesDays} days.`, hint: "Turn it off on the Privacy and guardrails tab when you no longer need it." });
     const hook = guardrails.hook();
     if (hook && !hook.private) out.push({ id: "hook-public", severity: "warn", title: "The pre-request hook is outside your network", detail: hook.url, hint: "Every prompt is sent to it. Use a hook on loopback, your LAN or your tailnet." });
@@ -162,6 +166,12 @@ export function createInternalHandler(deps) {
     ["PUT", /^\/guardrails\/tools$/, (_m, b, actor) => ({ guardrails: guardrails.setBlockedTools(b.blockedTools, actor) })],
     ["PUT", /^\/guardrails\/hook$/, async (_m, b, actor) => ({ guardrails: await guardrails.setHook(b.url ? { url: b.url, failOpen: b.failOpen } : null, actor) })],
     ["POST", /^\/guardrails\/test$/, (_m, b) => guardrails.test(b.text, { pattern: b.pattern, flags: b.flags })],
+    // MCP servers.
+    ["GET", /^\/mcp-servers$/, () => ({ servers: mcp.list() })],
+    ["POST", /^\/mcp-servers$/, (_m, b, actor) => mcp.add(b, actor)],
+    ["POST", /^\/mcp-servers\/(\d+)\/test$/, (m) => mcp.retest(Number(m[1]))],
+    ["PATCH", /^\/mcp-servers\/(\d+)$/, (m, b, actor) => mcp.update(Number(m[1]), b, actor)],
+    ["DELETE", /^\/mcp-servers\/(\d+)$/, (m, _b, actor) => (mcp.remove(Number(m[1]), actor), { ok: true })],
     // The request log. Content is a separate, audited read.
     ["GET", /^\/requests$/, (_m, _b, _a, url) => listRequests(usage.db, Object.fromEntries(url.searchParams))],
     ["GET", /^\/requests\/(\d+)\/content$/, (m, _b, actor) => ({ content: capture.read(Number(m[1]), actor) })],
