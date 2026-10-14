@@ -556,7 +556,7 @@ Acceptance on rin-den (2026-10-14), p5 image, the reference MCP server (`@modelc
 
 - [x] **Two callers, different grants, different tool lists from the same endpoint; calls logged.** Grants: Everyone kept its models but no MCP tools; `cmgibbs@onyxailabs.com` got `everything__*`; the gateway key `mcp-ci` got `everything__echo`. Claude Code signed in by Tailscale listed all 13 `mcp__sparkdash__everything__*` tools; Claude Code sending the key listed only `mcp__sparkdash__everything__echo`. Each called a tool (`get-sum` 17 + 25 = 42; `echo`), and both calls are request records with person, tool, status 200 and latency (8 and 9 ms). With one tailnet identity to test from, the second caller was a gateway key; grants treat a key, a login and a group the same way, and the Gateway test runs the same check with two logins and a group.
 - Claude Code defers MCP tools behind tool search once there are many: with 13 tools its model listed none until asked to search, or with `ENABLE_TOOL_SEARCH=false`. The Gateway's `tools/list` was right either way.
-- Linux suite: see below.
+- Linux suite (rin-den, node:22 container, fresh copy of the tree): 852 of 853 server tests (the one failure is upstream's launcher HTTP API test, which times out in Docker on pristine upstream too), 512 of 512 frontend tests, typecheck clean.
 
 Decisions made while building (2026-10-14):
 
