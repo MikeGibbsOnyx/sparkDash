@@ -48,12 +48,13 @@ function GrantForm({ grant, people, groups, onDone, onCancel }: { grant: Grant |
   const [name, setName] = useState(grant?.name ?? "");
   const [who, setWho] = useState(grant?.selectors.join(", ") ?? "");
   const [models, setModels] = useState(grant?.modelPatterns.join(", ") ?? "");
+  const [tools, setTools] = useState(grant?.mcpPatterns.join(", ") ?? "");
   const [preview, setPreview] = useState<GrantPreview | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const draft: GrantDraft = useMemo(() => ({ name: name || "draft", selectors: split(who), modelPatterns: split(models), mcpPatterns: grant?.mcpPatterns ?? [] }), [name, who, models, grant]);
+  const draft: GrantDraft = useMemo(() => ({ name: name || "draft", selectors: split(who), modelPatterns: split(models), mcpPatterns: split(tools) }), [name, who, models, tools]);
 
   useEffect(() => {
-    if (!draft.selectors.length || !draft.modelPatterns.length) {
+    if (!draft.selectors.length || (!draft.modelPatterns.length && !draft.mcpPatterns?.length)) {
       setPreview({ changes: [] });
       return;
     }
@@ -111,10 +112,14 @@ function GrantForm({ grant, people, groups, onDone, onCancel }: { grant: Grant |
         <span>Models</span>
         <input className="field-input mono" value={models} onChange={(e) => setModels(e.target.value)} placeholder="claude-*, spark-1/*" />
       </label>
+      <label>
+        <span>MCP tools</span>
+        <input className="field-input mono" value={tools} onChange={(e) => setTools(e.target.value)} placeholder="github__*, linear__create_issue" />
+      </label>
       <Preview p={preview} />
       {error ? <p className="gw-bad">{error}</p> : null}
       <div className="gw-row">
-        <button type="submit" className="btn btn--primary btn--sm" disabled={!name.trim() || !draft.selectors.length || !draft.modelPatterns.length}>
+        <button type="submit" className="btn btn--primary btn--sm" disabled={!name.trim() || !draft.selectors.length || (!draft.modelPatterns.length && !draft.mcpPatterns?.length)}>
           {grant ? "Save grant" : "Create grant"}
         </button>
         <button type="button" className="btn btn--ghost btn--sm" onClick={onCancel}>
@@ -174,7 +179,13 @@ export function GrantsSection({ grants, people, groups, canEdit, onChanged }: { 
             <div>
               <b>{g.name}</b>
               <div className="gw-small">
-                <span className="mono">{g.selectors.join(", ")}</span> → <span className="mono">{g.modelPatterns.join(", ")}</span>
+                <span className="mono">{g.selectors.join(", ")}</span> → <span className="mono">{g.modelPatterns.join(", ") || "no models"}</span>
+                {g.mcpPatterns.length ? (
+                  <>
+                    {" "}
+                    · tools <span className="mono">{g.mcpPatterns.join(", ")}</span>
+                  </>
+                ) : null}
               </div>
               <div className="gw-small gw-muted">{g.updatedBy ? `Changed ${relativeTime(g.updatedAt)} by ${g.updatedBy}` : null}</div>
               {removing?.id === g.id ? <RemoveGrant grant={g} onDone={done} onCancel={() => setRemoving(null)} /> : null}

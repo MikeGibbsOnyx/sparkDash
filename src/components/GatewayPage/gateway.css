@@ -524,3 +524,12 @@
     gap: 0;
   }
 }
+
+/* Phase 5: MCP */
+.gw-header-row {
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+.gw-header-row label {
+  flex: 1 1 160px;
+}
