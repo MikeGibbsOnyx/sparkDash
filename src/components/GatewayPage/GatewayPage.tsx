@@ -4,11 +4,13 @@ import { useRole } from "../PeoplePage/AccessContext";
 import { atLeast } from "../PeoplePage/accessApi";
 import { AccessTab } from "./AccessTab";
 import { UsageTab } from "./UsageTab";
+import { RequestsTab } from "./RequestsTab";
+import { PrivacyTab } from "./PrivacyTab";
 import { AddProviderKey, ModelsTab } from "./ModelsTab";
 import { enableGateway, fetchGatewayStatus, gatewayUrl, pauseGateway, publishGateway, setServe, fetchLocalServers, tokens, usd, type GatewayStatus, type LocalServer, type PublishState } from "./gatewayApi";
 import "./gateway.css";
 
-type Tab = "overview" | "models" | "access" | "usage";
+type Tab = "overview" | "models" | "access" | "usage" | "requests" | "privacy";
 
 /** Open the AI Gateway page on a tab, from anywhere (after navigating to it). */
 export function openGatewayTab(tab: Tab, extra = "") {
@@ -24,7 +26,7 @@ function readTab(): { tab: Tab; newKey: boolean } {
   try {
     const q = new URLSearchParams(window.location.search);
     const t = q.get("tab");
-    return { tab: t === "models" || t === "access" || t === "usage" ? t : "overview", newKey: q.get("new") === "key" };
+    return { tab: t === "models" || t === "access" || t === "usage" || t === "requests" || t === "privacy" ? t : "overview", newKey: q.get("new") === "key" };
   } catch {
     return { tab: "overview", newKey: false };
   }
@@ -349,6 +351,8 @@ export function GatewayPage() {
                 ["models", "Models"],
                 ["access", "Access"],
                 ["usage", "Usage"],
+                ["requests", "Requests"],
+                ["privacy", "Privacy and guardrails"],
               ] as const
             ).map(([id, label]) => (
               <button key={id} type="button" role="tab" aria-selected={tab === id} className={tab === id ? "is-on" : ""} onClick={() => go(id)}>
@@ -360,6 +364,8 @@ export function GatewayPage() {
           {tab === "models" ? <ModelsTab canEdit={canEdit} onChanged={load} /> : null}
           {tab === "access" ? <AccessTab canEdit={canEdit} url={gatewayUrl(status)} startNewKey={newKey} /> : null}
           {tab === "usage" ? <UsageTab /> : null}
+          {tab === "requests" ? <RequestsTab /> : null}
+          {tab === "privacy" ? <PrivacyTab canEdit={canEdit} /> : null}
         </>
       ) : null}
       {!canEdit && status ? <p className="gw-muted gw-small">You can view this page but not change it.</p> : null}

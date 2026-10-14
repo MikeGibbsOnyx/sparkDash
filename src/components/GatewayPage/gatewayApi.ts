@@ -181,3 +181,57 @@ export function tokens(n: number | null | undefined): string {
   if (v >= 1e4) return `${Math.round(v / 1e3)}k`;
   return v.toLocaleString("en-US");
 }
+
+// ─── Phase 4: request log, capture, guardrails ────────────
+export type GuardrailHit = { detector: string; name: string; action: string; count: number; tools?: string[] };
+export type RequestRow = {
+  id: number;
+  ts: number;
+  identity: string;
+  via: string;
+  device: string | null;
+  client: string | null;
+  providerId: string | null;
+  model: string | null;
+  format: string | null;
+  stream: boolean;
+  status: number | null;
+  latencyMs: number | null;
+  ttfbMs: number | null;
+  inTok: number | null;
+  outTok: number | null;
+  cacheReadTok: number | null;
+  cacheWriteTok: number | null;
+  costUsd: number | null;
+  costBasis: string | null;
+  partial: boolean;
+  usageState: string | null;
+  sessionId: string | null;
+  agentId: string | null;
+  guardrailHits: GuardrailHit[];
+  error: string | null;
+  headers: Record<string, string>;
+  hasContent: boolean;
+};
+export type RequestFilter = { identity?: string; model?: string; status?: "" | "ok" | "error" | "blocked" | "refused" | "flagged"; range?: "" | "24h" | "7d" | "30d"; before?: number; limit?: number };
+export type CapturedContent = { request: string | null; response: string | null; requestTruncated: boolean; responseTruncated: boolean };
+export type DetectorMode = "off" | "flag" | "redact" | "block";
+export type Detector = { id: string; name: string; builtin: boolean; mode: DetectorMode; pattern?: string; flags?: string };
+export type GuardrailConfig = { detectors: Detector[]; blockedTools: string[]; hook: { url: string; failOpen: boolean; private: boolean } | null };
+export type CaptureSettings = { mode: "metadata" | "full"; retention: { bodiesDays: number; metadataDays: number } };
+
+export const fetchRequests = (f: RequestFilter) => {
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(f)) if (v !== undefined && v !== "" && v !== null) q.set(k, String(v));
+  return admin<{ requests: RequestRow[]; more: boolean }>(`/requests?${q}`);
+};
+export const fetchRequestContent = (id: number) => admin<{ content: CapturedContent }>(`/requests/${id}/content`);
+export const exportRequests = (from: number, to: number) => admin<{ jsonl: string; count: number }>(`/export?from=${from}&to=${to}`);
+export const fetchPrivacy = () => admin<{ capture: CaptureSettings; guardrails: GuardrailConfig }>("/privacy");
+export const saveCapture = (b: Partial<{ mode: CaptureSettings["mode"]; retention: Partial<CaptureSettings["retention"]> }>) => admin<{ capture: CaptureSettings }>("/privacy/capture", "PATCH", b);
+export const setDetectorMode = (id: string, mode: DetectorMode) => admin<{ guardrails: GuardrailConfig }>(`/guardrails/detectors/${id}`, "PATCH", { mode });
+export const addDetector = (b: { name: string; pattern: string; flags?: string; mode: DetectorMode }) => admin<{ guardrails: GuardrailConfig }>("/guardrails/detectors", "POST", b);
+export const removeDetector = (id: string) => admin<{ guardrails: GuardrailConfig }>(`/guardrails/detectors/${id}`, "DELETE");
+export const saveBlockedTools = (blockedTools: string[]) => admin<{ guardrails: GuardrailConfig }>("/guardrails/tools", "PUT", { blockedTools });
+export const saveHook = (b: { url: string; failOpen: boolean } | null) => admin<{ guardrails: GuardrailConfig }>("/guardrails/hook", "PUT", b ?? {});
+export const testDetectors = (text: string, pattern?: string, flags?: string) => admin<{ redacted: string; hits: GuardrailHit[] }>("/guardrails/test", "POST", { text, pattern, flags });
