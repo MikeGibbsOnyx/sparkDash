@@ -6,7 +6,7 @@ import { nameFromUrl } from "../mcp/servers.js";
 import { splitToolName } from "../mcp/endpoint.js";
 
 const TOKEN = "Bearer mcp-PLANTEDupstreamCREDENTIAL0000000000";
-const as = (login) => ({ "content-type": "application/json", "tailscale-user-login": login, "user-agent": "claude-cli/2.1.299 (external, cli)" });
+const as = (login) => ({ "content-type": "application/json", "tailscale-user-login": login, "user-agent": "claude-code/2.1.300" });
 let nextId = 1;
 
 async function rpc(g, login, method, params) {
@@ -104,6 +104,7 @@ test("one endpoint, different tool lists: each person sees only what their grant
     ["sam@onyx.test", "alpha__fail", 200],
   ]);
   assert.ok(rows[0].provider_id.startsWith("mcp-"));
+  assert.equal(g.gw.db.prepare("SELECT client FROM requests WHERE format = 'mcp' LIMIT 1").get().client, "Claude Code");
   assert.match(rows[4].error, /always fails/);
 });
 
