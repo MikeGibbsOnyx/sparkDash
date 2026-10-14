@@ -41,9 +41,9 @@ export class Usage {
     this._next = 1;
     this._insert = db.prepare(
       `INSERT INTO requests (ts, end_ts, identity, via, kind, key_name, groups, device, client, provider_id, model, format, stream, status, latency_ms, ttfb_ms,
-                             in_tok, out_tok, cache_read_tok, cache_write_tok, cost_usd, cost_basis, price_snapshot, partial, usage_state, session_id, agent_id, error)
+                             in_tok, out_tok, cache_read_tok, cache_write_tok, cost_usd, cost_basis, price_snapshot, partial, usage_state, session_id, agent_id, error, guardrail_hits, headers)
        VALUES (@ts, @endTs, @identity, @via, @kind, @keyName, @groups, @device, @client, @providerId, @model, @format, @stream, @status, @latencyMs, @ttfbMs,
-               @in, @out, @cacheRead, @cacheWrite, @costUsd, @costBasis, @priceSnapshot, @partial, @usageState, @sessionId, @agentId, @error)`
+               @in, @out, @cacheRead, @cacheWrite, @costUsd, @costBasis, @priceSnapshot, @partial, @usageState, @sessionId, @agentId, @error, @guardrailHits, @headers)`
     );
     this._roll = db.prepare(
       `INSERT INTO usage_daily (day, identity, model, provider_id, cost_basis, client, requests, in_tok, out_tok, cache_read_tok, cache_write_tok, cost_usd)
@@ -108,6 +108,8 @@ export class Usage {
       sessionId: r.sessionId ?? null,
       agentId: r.agentId ?? null,
       error: r.error ?? null,
+      guardrailHits: r.guardrailHits?.length ? JSON.stringify(r.guardrailHits) : null,
+      headers: r.headers && Object.keys(r.headers).length ? JSON.stringify(r.headers) : null,
     };
     let id;
     this.db.transaction(() => {

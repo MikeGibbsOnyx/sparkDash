@@ -6,6 +6,7 @@ import { redact } from "../../shared/redact.js";
 import { detectProvider } from "../providers/catalog.js";
 import { ProviderError } from "../providers/registry.js";
 import { safeZone } from "../usage/periods.js";
+import { exportJsonl, listRequests } from "../logging/capture.js";
 
 function equal(a, b) {
   const x = Buffer.from(String(a || ""));
@@ -23,11 +24,13 @@ function equal(a, b) {
  * @param {import("../usage/ledger.js").Usage} deps.usage
  * @param {import("../policy/budgets.js").Budgets} deps.budgets
  * @param {import("../usage/energy.js").Energy} deps.energy
+ * @param {import("../guardrails/index.js").Guardrails} deps.guardrails
+ * @param {import("../logging/capture.js").CaptureStore} deps.capture
  * @param {ReturnType<import("../config.js").loadConfig>} deps.config
  * @param {string} deps.version
  */
 export function createInternalHandler(deps) {
-  const { secret, state, providers, grants, keys, usage, budgets, energy, config, version } = deps;
+  const { secret, state, providers, grants, keys, usage, budgets, energy, guardrails, capture, config, version } = deps;
   const RANGE_MS = { "24h": 86_400_000, "7d": 7 * 86_400_000, "30d": 30 * 86_400_000, all: null };
   const sinceFor = (range) => {
     const span = RANGE_MS[range] === undefined ? RANGE_MS["7d"] : RANGE_MS[range];
@@ -66,6 +69,9 @@ export function createInternalHandler(deps) {
       if (!s.reachable) out.push({ id: `local-unreachable:${s.id}`, severity: "info", title: `The model server on ${s.machine} :${s.port} can't be served`, detail: s.fix, hint: s.fix });
     }
     out.push(...budgets.findings());
+    if (capture.mode === "full") out.push({ id: "capture-full", severity: "info", title: "Full capture is on", detail: `Prompts and responses are stored for ${capture.retention().bodiesDays} days.`, hint: "Turn it off on the Privacy and guardrails tab when you no longer need it." });
+    const hook = guardrails.hook();
+    if (hook && !hook.private) out.push({ id: "hook-public", severity: "warn", title: "The pre-request hook is outside your network", detail: hook.url, hint: "Every prompt is sent to it. Use a hook on loopback, your LAN or your tailnet." });
     const unpriced = usage.summary({ range: "7d", groupBy: "model" }).rows.filter((r) => r.unpricedRequests > 0);
     if (unpriced.length) {
       out.push({ id: "models-unpriced", severity: "info", title: `${unpriced.length === 1 ? `${unpriced[0].key} has` : `${unpriced.length} models have`} no price set`, detail: unpriced.map((r) => r.key).join(", "), hint: "Their requests count as $0 toward budgets. Set prices on the Models tab." });
@@ -147,6 +153,24 @@ export function createInternalHandler(deps) {
     // Gateway traffic to local models, for the Token totals page.
     ["GET", /^\/usage\/local$/, (_m, _b, _a, url) => ({ models: usage.localTotals(url.searchParams.has("since") ? Number(url.searchParams.get("since")) || 0 : sinceFor(url.searchParams.get("range") || "all")) })],
     ["GET", /^\/settings$/, () => ({ personalKeys: state.personalKeys, timeZone: state.timeZone })],
+    // Privacy and guardrails.
+    ["GET", /^\/privacy$/, () => ({ capture: capture.settings(), guardrails: guardrails.config() })],
+    ["PATCH", /^\/privacy\/capture$/, (_m, b, actor) => ({ capture: capture.update({ mode: b.mode, retention: b.retention }, actor) })],
+    ["PATCH", /^\/guardrails\/detectors\/([\w:]+)$/, (m, b, actor) => ({ guardrails: guardrails.setMode(m[1], b.mode, actor) })],
+    ["POST", /^\/guardrails\/detectors$/, (_m, b, actor) => ({ guardrails: guardrails.addDetector(b, actor) })],
+    ["DELETE", /^\/guardrails\/detectors\/custom:(\d+)$/, (m, _b, actor) => ({ guardrails: guardrails.removeDetector(Number(m[1]), actor) })],
+    ["PUT", /^\/guardrails\/tools$/, (_m, b, actor) => ({ guardrails: guardrails.setBlockedTools(b.blockedTools, actor) })],
+    ["PUT", /^\/guardrails\/hook$/, async (_m, b, actor) => ({ guardrails: await guardrails.setHook(b.url ? { url: b.url, failOpen: b.failOpen } : null, actor) })],
+    ["POST", /^\/guardrails\/test$/, (_m, b) => guardrails.test(b.text, { pattern: b.pattern, flags: b.flags })],
+    // The request log. Content is a separate, audited read.
+    ["GET", /^\/requests$/, (_m, _b, _a, url) => listRequests(usage.db, Object.fromEntries(url.searchParams))],
+    ["GET", /^\/requests\/(\d+)\/content$/, (m, _b, actor) => ({ content: capture.read(Number(m[1]), actor) })],
+    ["GET", /^\/export$/, (_m, _b, _a, url) => {
+      const from = Number(url.searchParams.get("from")) || 0;
+      const to = Number(url.searchParams.get("to")) || Date.now();
+      const jsonl = exportJsonl(usage.db, { from, to });
+      return { jsonl, count: jsonl ? jsonl.split("\n").length - 1 : 0 };
+    }],
     ["PATCH", /^\/settings$/, (_m, b, actor) => {
       if (b.personalKeys !== undefined) {
         state.set("personal_keys", Boolean(b.personalKeys));

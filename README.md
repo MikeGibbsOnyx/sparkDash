@@ -366,6 +366,12 @@ On the tailnet the key is the literal `sparkdash`; the Gateway uses your Tailsca
 - **Budgets** (Access tab): for everyone, a person, a group or a gateway key; per day, week (Monday start) or month in **Settings → Time zone**; in USD and/or tokens. A request that could take a budget past its limit (its maximum output at the output price) is refused before it leaves the machine with a `429` in the tool's own format, `x-should-retry: false` and a message naming the budget and when it resets. While a budget applies, each person may have at most 8 requests in flight.
 - **Usage tab**: spend and tokens by person, group, model, provider, client or Claude Code session, with a CSV export. **Grants** are edited on the Access tab, with a preview of who gains or loses access.
 
+### Request log, capture and guardrails
+
+- **Requests tab**: every request with its person, tool, model, status, timing, tokens, cost and guardrail hits; **Export JSONL** (metadata only).
+- **Capture** (Privacy and guardrails tab): **Metadata only** by default, so prompts and responses are never written to disk. **Full capture** also stores each request and response for 7 days (adjustable), readable by Admins and Auditors; every view is logged with the viewer's name in Activity. Records are kept 400 days (adjustable) and purged hourly.
+- **Guardrails** (off by default): detectors for email, phone, payment cards, SSN/SIN and secrets, plus your own patterns, each set to Flag, Redact or Block; tool blocking by name; and an optional pre-request hook. For coding agents prefer Flag or Block: redaction changes what the model reads.
+
 ## Mobile PWA (install on a phone)
 
 sparkDash is a **PWA**: from a supported browser it installs to the home screen and runs fullscreen like a native app, with its own icon and no browser chrome.

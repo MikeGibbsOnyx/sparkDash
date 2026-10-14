@@ -496,7 +496,7 @@ Acceptance on rin-den (2026-10-12), Gateway container as in docker-compose.yml (
 
 Acceptance on rin-den (2026-10-13): Gateway and Observer from the p3 image, Gateway on the Phase 2 data volume (schema migrated in place), Observer monitoring rin-den itself with its Ollama server (qwen3vl32b) served through the Gateway, electricity price $0.15/kWh, time zone America/Toronto. Clients ran on a Mac on the tailnet, from a clean HOME with the Connect page's snippets.
 
-- [ ] **Tokens match the provider console.** Claude Code 2.1.296 with the company key: Claude Code's own `--output-format json` usage (2 input, 11 output, 26,382 cache write) equals the Gateway's record exactly. So does Codex 0.162.1's "tokens used 12,021" (11,888 in + 133 out on gpt-5-mini). The check against console.anthropic.com and platform.openai.com themselves is Michael's (key …2wAA: 2026-10-13, 17:43 to 17:51 UTC).
+- [x] **Tokens match the provider console** (accepted by Michael on 2026-10-14 on the clients' own counts below; the console itself wasn't checked). Claude Code 2.1.296 with the company key: Claude Code's own `--output-format json` usage (2 input, 11 output, 26,382 cache write) equals the Gateway's record exactly. So does Codex 0.162.1's "tokens used 12,021" (11,888 in + 133 out on gpt-5-mini). The check against console.anthropic.com and platform.openai.com themselves is Michael's (key …2wAA: 2026-10-13, 17:43 to 17:51 UTC).
 - [x] **A budget stops Claude Code and Codex with a readable message and no retry loop.** Token budget "Mike daily (test)" (50,000 a day, already at 52,864). Claude Code printed `API Error: Request rejected (429) · Budget 'Mike daily (test)' used: 52,864 of 50,000 tokens. Resets Oct 14.` and Codex printed the same message (as a 400, below). Each made exactly one request, and each refusal is in the request log.
 - [x] **A local request shows an energy cost within 2 minutes:** 59 seconds after the request ended (Ollama on rin-den, streamed Chat Completion; `include_usage` was added and its chunk was hidden from the client).
 - Linux suite (rin-den, node:22 container): 834 of 834 server tests, 505 of 505 frontend tests, typecheck clean.
@@ -517,13 +517,32 @@ Decisions made while building (2026-10-13; the first three are Michael's):
 
 ### Phase 4: Logging, guardrails and audit
 
-- [ ] Capture modes, body store, retention purge, JSONL export
-- [ ] Requests tab; audited content view; Activity merge of Gateway audit
-- [ ] Detectors, scanner, deterministic redaction, tool blocking, hook
-- [ ] Privacy and guardrails tab with detector test box
-- [ ] Tests: metadata-only writes no body files; purge with a fake clock; detector true and false positives; thinking blocks untouched
+- [x] Capture modes, body store, retention purge, JSONL export
+- [x] Requests tab; audited content view; Activity merge of Gateway audit
+- [x] Detectors, scanner, deterministic redaction, tool blocking, hook
+- [x] Privacy and guardrails tab with detector test box
+- [x] Tests: metadata-only writes no body files; purge with a fake clock; detector true and false positives; thinking blocks untouched
 
 **Done when:** viewing captured content writes an audit event naming the viewer; a planted card number is blocked or redacted as configured without breaking a Claude Code session.
+
+Acceptance on rin-den (2026-10-14), p4 image, Gateway on the same data volume (schema 3 migrated in place), Claude Code 2.1.299 from a Mac with the company key:
+
+- [x] **Viewing captured content writes an audit event naming the viewer.** Full capture on; opening request 57's content from the dashboard wrote `content.viewed`, and Activity showed "local console viewed the captured content of request 57 (cmgibbs@onyxailabs.com, claude-opus-5-5)". Through Tailscale Serve the viewer is the signed-in person; the Gateway test checks a named Auditor.
+- [x] **A planted card number is redacted or blocked as configured, without breaking a Claude Code session.** Redact: Claude Code saw only `[CARD_1]`, and the next turn (`claude -c`, history resent) carried the same placeholder and answered; both requests 200, each with a "Payment card: redacted" hit. Block: Claude Code showed `API Error: 400 The gateway blocked this request: it contains something its guardrails don't allow out (Payment card). …`; it sent the request twice, 0.4 s apart, then stopped. A new prompt without the card worked at once. (A conversation whose history holds a blocked value stays blocked until it's rewound; Redact is the setting that keeps such a session going.)
+- Linux suite (rin-den, node:22 container): 847 of 847 server tests, 509 of 509 frontend tests, typecheck clean.
+- The test settings were put back to the defaults (metadata only, every guardrail off).
+
+Decisions made while building (2026-10-14):
+
+- Every detector is **Off** until an Admin changes it, matching "guardrails keep their defaults (off) until changed". With nothing on, bodies pass byte for byte, without being parsed or copied.
+- Stored content is the request **as sent** (after redaction and tool removal), and the response as the client received it, decoded.
+- Redaction numbers values per detector in order of first appearance across system, messages and tool results, so a resent history gets the same placeholders every turn. The scanner never edits a Gemini part with `thought`/`thoughtSignature`, an Anthropic `thinking`/`redacted_thinking` block, a Responses `reasoning` item, tool calls' arguments or tool schemas.
+- A hook's `replace` keeps the requested `model`: grants and budgets were checked against it.
+- Blocked requests are request records (`400`, `usage_state` `blocked`, the detector names and counts in `guardrail_hits`, never the matched text).
+- SIN uses the Luhn check only (CRA's own examples start with 0). Cards are 13 to 19 digits starting 2 to 6 and passing Luhn. Bare digit runs are never phone numbers.
+- Admin regexes are compiled and checked when saved (invalid, or matching empty text, is refused). A slow pattern can't be time-limited in Node; the UI warns, and the test box is there to try it first.
+- The JSONL export is metadata only, up to 200,000 rows a call; the dashboard downloads the selected range (30 days by default).
+- The hourly purge deletes content past its retention, then request records past theirs; `usage_daily` rollups are kept.
 
 ### Phase 5: MCP proxy
 

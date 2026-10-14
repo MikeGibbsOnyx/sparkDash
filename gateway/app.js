@@ -15,6 +15,7 @@ import { createUsageTap } from "./usage/tap.js";
 import { createUsageChunkFilter, injectIncludeUsage } from "./usage/includeUsage.js";
 import { costOf, priceSnapshot, totalTokens } from "./usage/ledger.js";
 import { requestedMaxOutput } from "./policy/budgets.js";
+import { BODY_CAP, storedHeaders } from "./logging/capture.js";
 
 const STATIC_TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".woff2": "font/woff2", ".json": "application/json", ".ico": "image/x-icon", ".webmanifest": "application/manifest+json" };
 
@@ -27,12 +28,14 @@ const STATIC_TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascr
  * @param {import("./credentials/gatewayKeys.js").GatewayKeys} deps.keys
  * @param {import("./usage/ledger.js").Usage} deps.usage
  * @param {import("./policy/budgets.js").Budgets} deps.budgets
+ * @param {import("./guardrails/index.js").Guardrails} deps.guardrails
+ * @param {import("./logging/capture.js").CaptureStore} deps.capture
  * @param {(ip: string, port?: number) => Promise<object | null>} deps.whois
  * @param {import("undici").Agent} deps.agent
  * @param {(line: string) => void} [deps.log]
  */
 export function createPublicHandler(deps) {
-  const { config, state, providers, grants, keys, whois, agent, usage, budgets } = deps;
+  const { config, state, providers, grants, keys, whois, agent, usage, budgets, guardrails, capture } = deps;
   const log = deps.log || ((line) => console.log(line));
   const allow = createRateLimiter(config.ratePerMinute);
 
@@ -140,21 +143,51 @@ export function createPublicHandler(deps) {
     const metered = isMetered(route.format, url.pathname);
     const prices = costBasis === "key" ? priceSnapshot(model) : null;
     const subject = { kind: who.kind, login: who.login, keyName: who.keyName ?? null, groups: who.groups };
+    const client = clientFromUserAgent(req.headers["user-agent"]);
+    const headersKept = storedHeaders(req.headers);
+    const refusal = (status, usageState, error, hits) =>
+      usage.record({ ts: Date.now(), identity: who.label, via: who.via, kind: who.kind, keyName: who.keyName ?? null, groups: who.groups, device: who.device, client, providerId: provider.id, model: modelName, format: route.format, stream: route.stream ?? Boolean(parsed?.stream), status, latencyMs: 0, costBasis, usageState, sessionId: req.headers["x-claude-code-session-id"] || null, agentId: req.headers["x-claude-code-agent-id"] || null, error, guardrailHits: hits, headers: headersKept });
+
+    // Guardrails: detectors, tool blocking and the hook, before anything leaves the machine.
+    let guardHits = [];
+    let guardChanged = false;
+    if (guardrails.enabled) {
+      let toScan = parsed;
+      if (!toScan) {
+        try {
+          toScan = JSON.parse(body.toString("utf8"));
+        } catch {
+          toScan = null;
+        }
+      }
+      const g = await guardrails.apply({ format: route.format, parsed: toScan, who, model: modelName });
+      guardHits = [...g.hits, ...(g.removedTools.length ? [{ detector: "tools", name: "Tool blocking", action: "removed", count: g.removedTools.length, tools: [...new Set(g.removedTools)] }] : [])];
+      if (g.action === "block") {
+        sendError(res, family, 400, g.message);
+        refusal(400, "blocked", g.hookError ? `hook: ${g.hookError}` : "blocked by guardrails", guardHits);
+        return;
+      }
+      if (g.body) {
+        // A hook may rewrite the request, but not which model it asks for: grants and budgets checked that one.
+        if (route.modelFrom === "body") g.body.model = modelName;
+        parsed = g.body;
+        guardChanged = true;
+      }
+    }
 
     // Budgets: refuse before anything leaves the machine.
     const admission = metered ? budgets.admit({ subject, label: who.label, costBasis, priceOut: prices?.out ?? null, maxOutput: requestedMaxOutput(route.format, parsed) }) : { ok: true, ticket: null };
     if (!admission.ok) {
-      const client = clientFromUserAgent(req.headers["user-agent"]);
       // Codex shows its own wording for every 429 ("Quota exceeded. Check your plan…"); a 400
       // reaches the person as written, after one attempt (decided 2026-10-13, Michael).
       const codex = client === "Codex" && !admission.retryable;
       sendError(res, family, codex ? 400 : admission.status, admission.message, admission.retryable ? { "x-should-retry": "true", "retry-after": "2" } : {}, codex ? { code: "budget_exceeded" } : { quota: !admission.retryable });
       // Refusals are request records too (no tokens, no cost), so a retry loop would show.
-      usage.record({ ts: Date.now(), identity: who.label, via: who.via, kind: who.kind, keyName: who.keyName ?? null, groups: who.groups, device: who.device, client, providerId: provider.id, model: modelName, format: route.format, stream: route.stream ?? Boolean(parsed?.stream), status: codex ? 400 : admission.status, latencyMs: 0, costBasis, usageState: "refused", sessionId: req.headers["x-claude-code-session-id"] || null, agentId: req.headers["x-claude-code-agent-id"] || null, error: admission.message });
+      refusal(codex ? 400 : admission.status, "refused", admission.message, guardHits);
       return;
     }
 
-    let outBody = body;
+    let outBody = guardChanged ? Buffer.from(JSON.stringify(parsed)) : body;
     let sendParsed = parsed;
     let outPath = url.pathname;
     if (provider.type === "local" && model.upstream !== model.name) {
@@ -198,7 +231,7 @@ export function createPublicHandler(deps) {
         body: outBody,
         agent,
         filter,
-        tap: metered ? (_status, h) => createUsageTap({ format: route.format, headers: h }) : null,
+        tap: metered || capture.mode === "full" ? (_status, h) => createUsageTap({ format: route.format, headers: h, capture: capture.mode === "full" ? BODY_CAP : 0 }) : null,
         onConnectError: (status, message) => sendError(res, family, status, `${message} Provider: ${provider.name}.`),
       });
       providers.markUsed(provider.id);
@@ -209,7 +242,7 @@ export function createPublicHandler(deps) {
       let costUsd = costBasis === "key" && u ? costOf(u, prices) : null;
       // An unreadable successful response is charged what it reserved, so a budget can't be slipped past.
       if (costBasis === "key" && usageState === "unreadable" && result.status < 400 && prices) costUsd = (requestedMaxOutput(route.format, parsed) * prices.out) / 1e6;
-      usage.record({
+      const rowId = usage.record({
         ts,
         endTs: ts + Math.round(result.latencyMs),
         identity: who.label,
@@ -218,7 +251,7 @@ export function createPublicHandler(deps) {
         keyName: who.keyName ?? null,
         groups: who.groups,
         device: who.device,
-        client: clientFromUserAgent(req.headers["user-agent"]),
+        client,
         providerId: provider.id,
         model: modelName,
         format: route.format,
@@ -235,7 +268,16 @@ export function createPublicHandler(deps) {
         sessionId: req.headers["x-claude-code-session-id"] || null,
         agentId: req.headers["x-claude-code-agent-id"] || null,
         error: result.error ? redact(result.error, [secret]) : null,
+        guardrailHits: guardHits,
+        headers: headersKept,
       });
+      if (capture.mode === "full") {
+        try {
+          capture.write(rowId, { request: outBody, response: read?.captured ?? null, responseTruncated: Boolean(read?.capturedTruncated) });
+        } catch (err) {
+          log(`[gateway] couldn't store content for request ${rowId}: ${err.code || err.message}`);
+        }
+      }
       if (metered) budgets.add(subject, ts, { usd: costUsd ?? 0, tokens: totalTokens(u), costBasis });
       if (result.error && result.error !== "client closed") log(`[gateway] ${who.label} ${modelName}: ${redact(result.error, [secret])}`);
     } finally {
