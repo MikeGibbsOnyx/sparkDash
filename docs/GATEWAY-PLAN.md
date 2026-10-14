@@ -517,13 +517,25 @@ Decisions made while building (2026-10-13; the first three are Michael's):
 
 ### Phase 4: Logging, guardrails and audit
 
-- [ ] Capture modes, body store, retention purge, JSONL export
-- [ ] Requests tab; audited content view; Activity merge of Gateway audit
-- [ ] Detectors, scanner, deterministic redaction, tool blocking, hook
-- [ ] Privacy and guardrails tab with detector test box
-- [ ] Tests: metadata-only writes no body files; purge with a fake clock; detector true and false positives; thinking blocks untouched
+- [x] Capture modes, body store, retention purge, JSONL export
+- [x] Requests tab; audited content view; Activity merge of Gateway audit
+- [x] Detectors, scanner, deterministic redaction, tool blocking, hook
+- [x] Privacy and guardrails tab with detector test box
+- [x] Tests: metadata-only writes no body files; purge with a fake clock; detector true and false positives; thinking blocks untouched
 
 **Done when:** viewing captured content writes an audit event naming the viewer; a planted card number is blocked or redacted as configured without breaking a Claude Code session.
+
+Decisions made while building (2026-10-14):
+
+- Every detector is **Off** until an Admin changes it, matching "guardrails keep their defaults (off) until changed". With nothing on, bodies pass byte for byte, without being parsed or copied.
+- Stored content is the request **as sent** (after redaction and tool removal), and the response as the client received it, decoded.
+- Redaction numbers values per detector in order of first appearance across system, messages and tool results, so a resent history gets the same placeholders every turn. The scanner never edits a Gemini part with `thought`/`thoughtSignature`, an Anthropic `thinking`/`redacted_thinking` block, a Responses `reasoning` item, tool calls' arguments or tool schemas.
+- A hook's `replace` keeps the requested `model`: grants and budgets were checked against it.
+- Blocked requests are request records (`400`, `usage_state` `blocked`, the detector names and counts in `guardrail_hits`, never the matched text).
+- SIN uses the Luhn check only (CRA's own examples start with 0). Cards are 13 to 19 digits starting 2 to 6 and passing Luhn. Bare digit runs are never phone numbers.
+- Admin regexes are compiled and checked when saved (invalid, or matching empty text, is refused). A slow pattern can't be time-limited in Node; the UI warns, and the test box is there to try it first.
+- The JSONL export is metadata only, up to 200,000 rows a call; the dashboard downloads the selected range (30 days by default).
+- The hourly purge deletes content past its retention, then request records past theirs; `usage_daily` rollups are kept.
 
 ### Phase 5: MCP proxy
 
