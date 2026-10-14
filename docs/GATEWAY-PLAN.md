@@ -525,6 +525,13 @@ Decisions made while building (2026-10-13; the first three are Michael's):
 
 **Done when:** viewing captured content writes an audit event naming the viewer; a planted card number is blocked or redacted as configured without breaking a Claude Code session.
 
+Acceptance on rin-den (2026-10-14), p4 image, Gateway on the same data volume (schema 3 migrated in place), Claude Code 2.1.299 from a Mac with the company key:
+
+- [x] **Viewing captured content writes an audit event naming the viewer.** Full capture on; opening request 57's content from the dashboard wrote `content.viewed`, and Activity showed "local console viewed the captured content of request 57 (cmgibbs@onyxailabs.com, claude-opus-5-5)". Through Tailscale Serve the viewer is the signed-in person; the Gateway test checks a named Auditor.
+- [x] **A planted card number is redacted or blocked as configured, without breaking a Claude Code session.** Redact: Claude Code saw only `[CARD_1]`, and the next turn (`claude -c`, history resent) carried the same placeholder and answered; both requests 200, each with a "Payment card: redacted" hit. Block: Claude Code showed `API Error: 400 The gateway blocked this request: it contains something its guardrails don't allow out (Payment card). …`; it sent the request twice, 0.4 s apart, then stopped. A new prompt without the card worked at once. (A conversation whose history holds a blocked value stays blocked until it's rewound; Redact is the setting that keeps such a session going.)
+- Linux suite (rin-den, node:22 container): 847 of 847 server tests, 509 of 509 frontend tests, typecheck clean.
+- The test settings were put back to the defaults (metadata only, every guardrail off).
+
 Decisions made while building (2026-10-14):
 
 - Every detector is **Off** until an Admin changes it, matching "guardrails keep their defaults (off) until changed". With nothing on, bodies pass byte for byte, without being parsed or copied.
