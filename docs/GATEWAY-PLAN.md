@@ -546,11 +546,25 @@ Decisions made while building (2026-10-14):
 
 ### Phase 5: MCP proxy
 
-- [ ] Upstream client (JSON and SSE), sessions, aggregation, prefixing, grant filtering
-- [ ] MCP tab with Test and save; Connect page MCP tile
-- [ ] Tests: fake MCP server; grant filtering; session expiry
+- [x] Upstream client (JSON and SSE), sessions, aggregation, prefixing, grant filtering
+- [x] MCP tab with Test and save; Connect page MCP tile
+- [x] Tests: fake MCP server; grant filtering; session expiry
 
 **Done when:** in Claude Code, two people with different grants see different tool lists from the same endpoint, and calls are logged.
+
+Acceptance on rin-den (2026-10-14), p5 image, the reference MCP server (`@modelcontextprotocol/server-everything`, Streamable HTTP, 13 tools) added on the MCP tab ("Connected. 13 tools."), Claude Code 2.1.300 from two clean HOMEs on a Mac, each with the Connect page's `claude mcp add` command:
+
+- [x] **Two callers, different grants, different tool lists from the same endpoint; calls logged.** Grants: Everyone kept its models but no MCP tools; `cmgibbs@onyxailabs.com` got `everything__*`; the gateway key `mcp-ci` got `everything__echo`. Claude Code signed in by Tailscale listed all 13 `mcp__sparkdash__everything__*` tools; Claude Code sending the key listed only `mcp__sparkdash__everything__echo`. Each called a tool (`get-sum` 17 + 25 = 42; `echo`), and both calls are request records with person, tool, status 200 and latency (8 and 9 ms). With one tailnet identity to test from, the second caller was a gateway key; grants treat a key, a login and a group the same way, and the Gateway test runs the same check with two logins and a group.
+- Claude Code defers MCP tools behind tool search once there are many: with 13 tools its model listed none until asked to search, or with `ENABLE_TOOL_SEARCH=false`. The Gateway's `tools/list` was right either way.
+- Linux suite: see below.
+
+Decisions made while building (2026-10-14):
+
+- The endpoint is stateless towards clients: no `Mcp-Session-Id` is issued, every request is identified like a model request (Tailscale, or a gateway key in `Authorization`). Upstream, one session per server is shared by all callers and re-made once on a `404`.
+- Protocol versions 2025-06-18, 2025-03-26 and 2024-11-05 are accepted; batches are answered; `resources/*`, `prompts/*` and anything else get "method not found".
+- A tool call is refused (JSON-RPC `-32602`) unless the caller's grants match its `<server>__<tool>` name and the server lists it; an unknown name triggers one refresh of that server's list first (lists are otherwise cached for a minute). Refusals are request records with status 403.
+- The credential header can be any name (default `Authorization`); its value is encrypted, never returned (the card shows its last 4), and a replacement is tested before the old one is dropped. Upstream URLs pass the same checks as provider URLs (http/https, no link-local or metadata addresses), and redirects are refused.
+- Timeouts: 10 s to start a session or list tools, 2 minutes for a tool call. MCP bodies are capped at 4 MB.
 
 ## Spike: verify before building
 
