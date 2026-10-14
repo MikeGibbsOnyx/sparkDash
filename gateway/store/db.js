@@ -123,6 +123,59 @@ export const MIGRATIONS = [
      target TEXT,
      detail TEXT
    );`,
+  // Phase 3: usage, cost and budgets.
+  `-- Who a request was, as budgets see them (kind, key, groups at the time), and when it ended.
+   ALTER TABLE requests ADD COLUMN kind TEXT;
+   ALTER TABLE requests ADD COLUMN key_name TEXT;
+   ALTER TABLE requests ADD COLUMN groups TEXT NOT NULL DEFAULT '[]';
+   ALTER TABLE requests ADD COLUMN end_ts INTEGER;
+   -- ok | partial | none (no usage in the response) | unreadable | unmetered (count_tokens) | refused (budget)
+   ALTER TABLE requests ADD COLUMN usage_state TEXT;
+   CREATE INDEX requests_local ON requests(provider_id, end_ts) WHERE cost_basis = 'local';
+   -- One row per local day (Settings time zone) and dimension; rebuilt if the zone changes.
+   CREATE TABLE usage_daily (
+     day TEXT NOT NULL,
+     identity TEXT NOT NULL,
+     model TEXT NOT NULL,
+     provider_id TEXT NOT NULL,
+     cost_basis TEXT NOT NULL,
+     client TEXT NOT NULL,
+     requests INTEGER NOT NULL DEFAULT 0,
+     in_tok INTEGER NOT NULL DEFAULT 0,
+     out_tok INTEGER NOT NULL DEFAULT 0,
+     cache_read_tok INTEGER NOT NULL DEFAULT 0,
+     cache_write_tok INTEGER NOT NULL DEFAULT 0,
+     cost_usd REAL NOT NULL DEFAULT 0,
+     PRIMARY KEY (day, identity, model, provider_id, cost_basis, client)
+   );
+   CREATE TABLE budgets (
+     id INTEGER PRIMARY KEY,
+     name TEXT NOT NULL,
+     scope TEXT NOT NULL,
+     period TEXT NOT NULL,
+     limit_usd REAL,
+     limit_tokens INTEGER,
+     warn_pct INTEGER NOT NULL DEFAULT 80,
+     created_by TEXT,
+     updated_by TEXT,
+     updated_at INTEGER NOT NULL,
+     warned_period TEXT,
+     exhausted_period TEXT
+   );
+   -- Pushed by the Observer each minute, per machine that hosts a local model server.
+   CREATE TABLE energy_minutes (
+     machine TEXT NOT NULL,
+     minute INTEGER NOT NULL,
+     wh REAL NOT NULL,
+     rate REAL,
+     server_tokens INTEGER NOT NULL DEFAULT 0,
+     gateway_tokens REAL,
+     cost_usd REAL,
+     attributed_usd REAL,
+     settled INTEGER NOT NULL DEFAULT 0,
+     PRIMARY KEY (machine, minute)
+   );
+   CREATE INDEX energy_unsettled ON energy_minutes(settled, minute);`,
 ];
 
 export function openGatewayDb(dataDir) {

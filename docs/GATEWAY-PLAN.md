@@ -485,14 +485,35 @@ Acceptance on rin-den (2026-10-12), Gateway container as in docker-compose.yml (
 
 ### Phase 3: Usage, cost and budgets
 
-- [ ] Usage taps for all four formats, including partial streams and the hidden `include_usage` chunk
-- [ ] Prices table; price snapshot per request; Subscription marking
-- [ ] Energy push from the Observer; per-minute local cost allocation; unattributed totals
-- [ ] Rollups; budgets with in-flight reservations and per-identity concurrency cap; client-format `429`
-- [ ] Grants and groups editors; Access and Usage tabs; Token totals feed
-- [ ] Tests: parser tables per format; budget period boundaries in America/Toronto; overshoot bound with 8 parallel requests; allocation maths
+- [x] Usage taps for all four formats, including partial streams and the hidden `include_usage` chunk
+- [x] Prices table; price snapshot per request; Subscription marking
+- [x] Energy push from the Observer; per-minute local cost allocation; unattributed totals
+- [x] Rollups; budgets with in-flight reservations and per-identity concurrency cap; client-format `429`
+- [x] Grants and groups editors; Access and Usage tabs; Token totals feed
+- [x] Tests: parser tables per format; budget period boundaries in America/Toronto; overshoot bound with 8 parallel requests; allocation maths
 
 **Done when:** a test session's tokens match the provider console; a budget stops Claude Code and Codex with a readable message and no retry loop; a local request shows an energy cost within 2 minutes.
+
+Acceptance on rin-den (2026-10-13): Gateway and Observer from the p3 image, Gateway on the Phase 2 data volume (schema migrated in place), Observer monitoring rin-den itself with its Ollama server (qwen3vl32b) served through the Gateway, electricity price $0.15/kWh, time zone America/Toronto. Clients ran on a Mac on the tailnet, from a clean HOME with the Connect page's snippets.
+
+- [ ] **Tokens match the provider console.** Claude Code 2.1.296 with the company key: Claude Code's own `--output-format json` usage (2 input, 11 output, 26,382 cache write) equals the Gateway's record exactly. So does Codex 0.162.1's "tokens used 12,021" (11,888 in + 133 out on gpt-5-mini). The check against console.anthropic.com and platform.openai.com themselves is Michael's (key …2wAA: 2026-10-13, 17:43 to 17:51 UTC).
+- [x] **A budget stops Claude Code and Codex with a readable message and no retry loop.** Token budget "Mike daily (test)" (50,000 a day, already at 52,864). Claude Code printed `API Error: Request rejected (429) · Budget 'Mike daily (test)' used: 52,864 of 50,000 tokens. Resets Oct 14.` and Codex printed the same message (as a 400, below). Each made exactly one request, and each refusal is in the request log.
+- [x] **A local request shows an energy cost within 2 minutes:** 59 seconds after the request ended (Ollama on rin-den, streamed Chat Completion; `include_usage` was added and its chunk was hidden from the client).
+- Linux suite (rin-den, node:22 container): 834 of 834 server tests, 505 of 505 frontend tests, typecheck clean.
+- Known limit: Anthropic's 1-hour cache writes cost more than 5-minute ones, but a model has one cache-write price, so they are charged alike.
+
+Decisions made while building (2026-10-13; the first three are Michael's):
+
+- **Electricity price is USD.** The Settings price has only a currency symbol; the Gateway reads it as USD per kWh, and the Usage tab says so.
+- **A model with no price counts as $0** under USD budgets (allowed, not refused), shows **No price set**, and raises a finding on the Overview.
+- **The usage tap reads an inflated copy** of gzip, deflate, br or zstd bodies; the client's bytes are unchanged. The exception is a streamed Chat Completion that gets `include_usage`: its upstream request asks for `accept-encoding: identity`, because the extra chunk has to be found in the client's bytes. A successful response whose encoding can't be read is charged its reservation (fail closed).
+- `in_tok` never includes cached tokens (OpenAI and Gemini report them inside the prompt count; the Gateway subtracts them). Reasoning and thinking tokens are output. Token budgets count every token, cached input included. A cache price that isn't set falls back to the input price.
+- **The 8-in-flight cap applies while a budget covers the caller** (the threat it answers is budget bypass). It returns a retryable `429` (`x-should-retry: true`, `retry-after: 2`). Without a budget, the per-minute rate limit still applies.
+- A request is refused when spend + in-flight reservations + its own reservation would pass the limit, not only when spend has reached it. The message says how much is left and what the request could cost. OpenAI-format budget refusals use the error type `insufficient_quota`, as OpenAI does for spend that has run out.
+- **Codex gets a `400` for a budget refusal** (decided by Michael). Codex 0.162 replaces the text of every 429 with its own words ("Quota exceeded. Check your plan and billing details." for `insufficient_quota`; "exceeded retry limit, last status: 429" otherwise), and a 403 is retried 6 times. A `400` with `code: budget_exceeded` is tried once and shows the Gateway's message. Every other client gets the plan's `429` with `x-should-retry: false`.
+- Weeks start on Monday. Usage days and budget periods follow the Settings time zone, which the Observer pushes with the energy minutes (its own zone when Settings follows the browser). Changing the zone re-cuts the daily rollup.
+- Per-minute energy comes from the fleet energy tracker's minute buckets. The tracker has no public per-minute read, so the bridge reads its bucket map, and a bridge test runs against the real tracker so an upstream change is caught. A cluster head carries its workers' energy; only machines that host a model server are sent. Server tokens per minute are the growth in the servers' own prompt plus output counters. A request's tokens are spread over its duration, and its share is taken over the larger of the server's count and the Gateway's own.
+- "Token totals feed": local traffic is already in Token totals through the servers' counters, so the Gateway's part is shown on that page as a "Through the AI gateway" table (requests, people, tokens and energy cost per local model), not added to the totals a second time.
 
 ### Phase 4: Logging, guardrails and audit
 

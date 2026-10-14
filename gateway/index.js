@@ -15,6 +15,9 @@ import { createVault, loadVaultKey } from "./credentials/vault.js";
 import { GatewayKeys } from "./credentials/gatewayKeys.js";
 import { Providers } from "./providers/registry.js";
 import { Grants } from "./policy/grants.js";
+import { Budgets } from "./policy/budgets.js";
+import { Usage } from "./usage/ledger.js";
+import { Energy } from "./usage/energy.js";
 import { createUpstreamAgent } from "./proxy/forward.js";
 import { createPublicHandler } from "./app.js";
 import { createInternalHandler } from "./internal/server.js";
@@ -33,11 +36,19 @@ export function createGateway(config, opts = {}) {
   const keys = new GatewayKeys(db, { audit: state.audit });
   const providers = new Providers(db, { vault, audit: state.audit, envKeys: config.envProviderKeys, fetchImpl: opts.fetchImpl, checkUrl: opts.checkUrl });
   const grants = new Grants(db, { audit: state.audit });
+  const timeZone = () => state.timeZone;
+  const usage = new Usage(db, { timeZone });
+  const budgets = new Budgets(db, { audit: state.audit, timeZone });
+  // Settled energy cost counts toward USD budgets like any other spend.
+  const energy = new Energy(db, {
+    usage,
+    onCost: (row, usd) => budgets.add({ kind: row.kind, login: row.kind === "person" ? row.identity : null, keyName: row.key_name, groups: JSON.parse(row.groups || "[]") }, row.ts, { usd, tokens: 0, costBasis: "local" }),
+  });
   const whois = opts.whois || createWhois({ socketPath: config.tailscaledSocket, cli: null });
   const agent = createUpstreamAgent(config);
   const version = JSON.parse(fs.readFileSync(path.join(config.root, "package.json"), "utf8")).version;
-  const publicHandler = createPublicHandler({ config, state, providers, grants, keys, whois, agent, log: opts.log });
-  return { db, state, providers, grants, keys, agent, version, publicHandler };
+  const publicHandler = createPublicHandler({ config, state, providers, grants, keys, whois, agent, usage, budgets, log: opts.log });
+  return { db, state, providers, grants, keys, usage, budgets, energy, agent, version, publicHandler };
 }
 
 /** Create the internal socket and its secret (0600), readable by the Observer. */
@@ -86,11 +97,20 @@ export async function main(env = process.env) {
   const pub = http.createServer({ noDelay: true, requestTimeout: 0, headersTimeout: 60_000, keepAliveTimeout: 65_000 }, gw.publicHandler);
   pub.listen(config.port, config.bindHost, () => console.log(`[gateway] listening on http://${config.bindHost}:${config.port} (sparkDash ${gw.version})`));
   try {
-    listenInternal(config, (secret) => createInternalHandler({ secret, state: gw.state, providers: gw.providers, grants: gw.grants, keys: gw.keys, config, version: gw.version }));
+    listenInternal(config, (secret) => createInternalHandler({ secret, ...gw, config }));
   } catch (err) {
     console.error(`[gateway] ${err.message}`);
     process.exit(1);
   }
+  // Local energy cost settles as the Observer's minutes arrive.
+  const settler = setInterval(() => {
+    try {
+      gw.energy.settle();
+    } catch (err) {
+      console.error(`[gateway] energy settlement failed: ${err.message}`);
+    }
+  }, 15_000);
+  settler.unref();
   console.log(`[gateway] internal API on ${config.socketPath}; gateway ${gw.state.enabled ? "on" : "off (turn it on from the AI Gateway page)"}`);
   const stop = () => {
     pub.close();

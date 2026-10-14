@@ -482,7 +482,7 @@ const access = createAccess({
 app.use(createHostGuardMiddleware(), access.guard.middleware);
 access.registerRoutes(app);
 // Onyx: the Observer side of the AI Gateway (server/gatewayBridge/).
-const gatewayBridge = createGatewayBridge({ directory: access.directory, db: access.db, orderedSnapshots, registry, recordEvent: (e) => recordEvent(e) });
+const gatewayBridge = createGatewayBridge({ directory: access.directory, db: access.db, orderedSnapshots, registry, recordEvent: (e) => recordEvent(e), energyTracker: fleetEnergyTracker, getSettings });
 gatewayBridge.registerRoutes(app);
 
 /** Fleet event log, newest first. Query: limit, sparkId, sinceId. */

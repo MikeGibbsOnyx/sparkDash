@@ -36,7 +36,7 @@ export async function startGateway(t, { whoisTable = {}, env = {} } = {}) {
   t.after(() => new Promise((r) => (pub.closeAllConnections(), pub.close(r))));
 
   const secret = "a".repeat(64);
-  const internal = http.createServer(createInternalHandler({ secret, state: gw.state, providers: gw.providers, grants: gw.grants, keys: gw.keys, config, version: gw.version }));
+  const internal = http.createServer(createInternalHandler({ secret, ...gw, config }));
   const sock = path.join(tmp, "gw.sock");
   internal.listen(sock);
   await once(internal, "listening");

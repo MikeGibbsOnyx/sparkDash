@@ -30,12 +30,17 @@ const OPENAI_TYPES = { 400: "invalid_request_error", 401: "authentication_error"
 /**
  * Write a Gateway error in the client's own format. Refusals carry `x-should-retry: false`,
  * so clients like Claude Code don't loop on them.
+ * `quota` marks a used-up budget: OpenAI-format clients get `insufficient_quota`, the type
+ * OpenAI itself uses for spend that has run out, which clients treat as final.
  */
-export function sendError(res, family, status, message, extraHeaders = {}) {
+export function sendError(res, family, status, message, extraHeaders = {}, { quota = false, code = null } = {}) {
   let body;
   if (family === "anthropic") body = { type: "error", error: { type: ANTHROPIC_TYPES[status] || "api_error", message } };
   else if (family === "gemini") body = { error: { code: status, message, status: GEMINI_STATUS[status] || "INTERNAL" } };
-  else body = { error: { message, type: OPENAI_TYPES[status] || "server_error", code: OPENAI_TYPES[status] || null } };
+  else {
+    const type = quota ? "insufficient_quota" : OPENAI_TYPES[status] || "server_error";
+    body = { error: { message, type, code: code ?? (quota ? "insufficient_quota" : OPENAI_TYPES[status] || null) } };
+  }
   const retry = status === 502 || status === 503;
   res.writeHead(status, {
     "content-type": "application/json",

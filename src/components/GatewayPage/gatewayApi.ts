@@ -12,7 +12,8 @@ export type GatewayHealth =
       providers: number;
       localServed: number;
       models: number;
-      today: { requests: number; people: number; errors: number; topPeople: { identity: string; requests: number }[]; topModels: { model: string; requests: number }[] };
+      today: { requests: number; people: number; errors: number; topPeople: { identity: string; requests: number }[]; topModels: { model: string; requests: number }[]; cloudUsd: number; localUsd: number; tokens: number };
+      timeZone: string;
       findings: Finding[];
       personalKeys: boolean;
     }
@@ -37,14 +38,66 @@ export type Provider = {
   ownLogin: boolean;
   ownLoginCapable: boolean;
   enabled: boolean;
+  injectUsage: boolean;
   modelCount: number;
   modelsEnabled: number;
 };
 export type SaveResult = { saved?: boolean; replaced?: boolean; ok: boolean | null; message: string; details?: string; provider?: Provider };
-export type Model = { id: number; name: string; providerId: string; providerName: string; providerType: string; enabled: boolean; usable: boolean };
-export type LocalServer = { id: string; machine: string; address: string; port: number; backend: string | null; models: string[]; hasApiKey: boolean; reachable: boolean; up: boolean; serve: boolean; fix: string | null };
+export type Prices = { in: number | null; out: number | null; cacheRead: number | null; cacheWrite: number | null };
+export type Model = { id: number; name: string; providerId: string; providerName: string; providerType: string; enabled: boolean; usable: boolean; prices: Prices; needsPrice: boolean };
+export type LocalServer = { id: string; machine: string; address: string; port: number; backend: string | null; models: string[]; hasApiKey: boolean; reachable: boolean; up: boolean; serve: boolean; injectUsage: boolean; fix: string | null };
 export type GatewayKey = { id: number; name: string; prefix: string; actsAs: string | null; access: string | null; createdBy: string; createdAt: number; expiresAt: number | null; lastUsedAt: number | null; lastUsedFrom: string | null; revokedAt: number | null; state: "active" | "expiring" | "expired" | "revoked" };
 export type Grant = { id: number; name: string; selectors: string[]; modelPatterns: string[]; mcpPatterns: string[]; updatedBy: string | null; updatedAt: number };
+export type GrantDraft = { name: string; selectors: string[]; modelPatterns: string[]; mcpPatterns?: string[] };
+export type GrantPreview = { changes: { caller: string; gains: string[]; losses: string[] }[] };
+export type Period = "day" | "week" | "month";
+export type Budget = {
+  id: number;
+  name: string;
+  scope: string;
+  period: Period;
+  limitUsd: number | null;
+  limitTokens: number | null;
+  warnPct: number;
+  spentUsd: number;
+  spentTokens: number;
+  inFlightUsd: number;
+  periodStart: number;
+  resetsAt: number;
+  resets: string;
+  state: "ok" | "warning" | "exhausted";
+  updatedBy: string | null;
+  updatedAt: number;
+};
+export type BudgetDraft = { name: string; scope: string; period: Period; limitUsd: number | null; limitTokens: number | null; warnPct: number };
+export type UsageRange = "24h" | "7d" | "30d" | "all";
+export type GroupBy = "person" | "group" | "model" | "provider" | "client" | "session";
+export type UsageRow = {
+  key: string | null;
+  requests: number;
+  inTok: number;
+  outTok: number;
+  cacheReadTok: number;
+  cacheWriteTok: number;
+  cloudUsd: number;
+  localUsd: number;
+  subscriptionRequests: number;
+  unpricedRequests: number;
+  localPending: number;
+  partialRequests: number;
+  lastTs: number;
+};
+export type EnergySummary = {
+  wh: number;
+  costUsd: number;
+  attributedUsd: number;
+  unattributedUsd: number;
+  minutesWithoutRate: number;
+  pendingMinutes: number;
+  lastMinute: number | null;
+  rate: number | null;
+  byMachine: { machine: string; wh: number; costUsd: number; attributedUsd: number; unattributedUsd: number; serverTokens: number; gatewayTokens: number }[];
+};
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
   const headers: Record<string, string> = { ...authHeaders() };
@@ -68,7 +121,7 @@ export const fetchProviders = () => admin<{ providers: Provider[]; conflicts: { 
 export const addProvider = (b: { key: string; type?: string | null; saveAnyway?: boolean; skipTest?: boolean }) => admin<SaveResult>("/providers", "POST", b);
 export const retestProvider = (id: string) => admin<SaveResult>(`/providers/${id}/test`, "POST");
 export const replaceProviderKey = (id: string, key: string) => admin<SaveResult>(`/providers/${id}/key`, "PUT", { key });
-export const updateProvider = (id: string, b: { ownLogin?: boolean; enabled?: boolean }) => admin<{ provider: Provider }>(`/providers/${id}`, "PATCH", b);
+export const updateProvider = (id: string, b: { ownLogin?: boolean; enabled?: boolean; injectUsage?: boolean }) => admin<{ provider: Provider }>(`/providers/${id}`, "PATCH", b);
 export const providerImpact = (id: string) => admin<{ people: number; requests: number; modelsUsed: number; modelsServed: number }>(`/providers/${id}/impact`);
 export const removeProvider = (id: string) => admin(`/providers/${id}`, "DELETE");
 export const fetchModels = () => admin<{ models: Model[]; conflicts: { name: string; providers: string }[] }>("/models");
@@ -79,7 +132,21 @@ export const fetchKeys = () => admin<{ keys: GatewayKey[] }>("/keys");
 export const createKey = (b: { name: string; access: string | null; expiry: string }) => admin<{ key: string; record: GatewayKey }>("/keys", "POST", b);
 export const revokeKey = (id: number) => admin(`/keys/${id}`, "DELETE");
 export const fetchGrants = () => admin<{ grants: Grant[] }>("/grants");
-export const fetchGatewaySettings = () => admin<{ personalKeys: boolean }>("/settings");
+export const setModelPrices = (id: number, p: Partial<Prices>) => admin<{ model: Model }>(`/models/${id}/prices`, "PATCH", p);
+export const createGrant = (g: GrantDraft) => admin<{ grant: Grant }>("/grants", "POST", g);
+export const updateGrant = (id: number, g: GrantDraft) => admin<{ grant: Grant }>(`/grants/${id}`, "PATCH", g);
+export const removeGrant = (id: number) => admin(`/grants/${id}`, "DELETE");
+export const previewGrant = (b: { id?: number | null; draft: GrantDraft | null }) => admin<GrantPreview>("/grants/preview", "POST", b);
+export const fetchBudgets = () => admin<{ budgets: Budget[]; timeZone: string }>("/budgets");
+export const createBudget = (b: BudgetDraft) => admin<{ budget: Budget }>("/budgets", "POST", b);
+export const updateBudget = (id: number, b: Partial<BudgetDraft>) => admin<{ budget: Budget }>(`/budgets/${id}`, "PATCH", b);
+export const removeBudget = (id: number) => admin(`/budgets/${id}`, "DELETE");
+export const fetchUsage = (range: UsageRange, groupBy: GroupBy) => admin<{ range: UsageRange; groupBy: GroupBy; since: number; rows: UsageRow[] }>(`/usage?range=${range}&groupBy=${groupBy}`);
+export const fetchUsageDaily = (range: UsageRange) => admin<{ timeZone: string; rows: { day: string; requests: number; tokens: number; cloudUsd: number; localUsd: number }[] }>(`/usage/daily?range=${range}`);
+export const fetchEnergy = (range: UsageRange) => admin<EnergySummary>(`/usage/energy?range=${range}`);
+export const fetchLocalUsage = (sinceMs: number) =>
+  admin<{ models: { model: string; requests: number; people: number; promptTokens: number; completionTokens: number; energyUsd: number }[] }>(`/usage/local?since=${Math.max(0, Math.floor(sinceMs))}`);
+export const fetchGatewaySettings = () => admin<{ personalKeys: boolean; timeZone?: string }>("/settings");
 export const saveGatewaySettings = (b: { personalKeys: boolean }) => admin<{ personalKeys: boolean }>("/settings", "PATCH", b);
 
 /** Same prefixes as the Gateway uses. */
@@ -96,4 +163,21 @@ export const PROVIDER_LABELS: Record<string, string> = { anthropic: "Anthropic",
 
 export function gatewayUrl(s: GatewayStatus | null): string {
   return s?.publish.url || `http://127.0.0.1:${s?.port ?? 5556}`;
+}
+
+/** "$1.23", "$0.0042" for small amounts, "$0" for nothing. */
+export function usd(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(n)) return "-";
+  if (n === 0) return "$0";
+  if (Math.abs(n) < 0.01) return `$${n.toPrecision(2)}`;
+  return `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+/** "1.2M", "34k", "512". */
+export function tokens(n: number | null | undefined): string {
+  const v = n ?? 0;
+  if (v >= 1e9) return `${(v / 1e9).toFixed(1)}B`;
+  if (v >= 1e6) return `${(v / 1e6).toFixed(1)}M`;
+  if (v >= 1e4) return `${Math.round(v / 1e3)}k`;
+  return v.toLocaleString("en-US");
 }

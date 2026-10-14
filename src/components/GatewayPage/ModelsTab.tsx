@@ -13,13 +13,17 @@ import {
   replaceProviderKey,
   retestProvider,
   setModelEnabled,
+  setModelPrices,
   setServe,
   updateProvider,
   type LocalServer,
   type Model,
+  type Prices,
   type Provider,
   type SaveResult,
 } from "./gatewayApi";
+
+const STREAM_USAGE_HELP = "Adds stream_options.include_usage to streamed Chat Completions so tokens are counted; the extra usage chunk is removed before the client sees it. Turn off for a server that rejects the field.";
 
 const PICKABLE: Provider["type"][] = ["anthropic", "openai", "gemini", "openrouter"];
 
@@ -172,6 +176,12 @@ function ProviderCard({ p, canEdit, onChanged }: { p: Provider; canEdit: boolean
           Let people use their own {p.type === "anthropic" ? "Claude" : "ChatGPT"} subscription
         </label>
       ) : null}
+      {p.type === "openai" || p.type === "openrouter" ? (
+        <label className="gw-switch" title={STREAM_USAGE_HELP}>
+          <input type="checkbox" checked={p.injectUsage} disabled={!canEdit || busy} onChange={(e) => void run(async () => (await updateProvider(p.id, { injectUsage: e.target.checked }), onChanged()))} />
+          Count tokens on streamed Chat Completions
+        </label>
+      ) : null}
       {canEdit ? (
         mode === "replace" ? (
           <div className="gw-inline">
@@ -278,12 +288,103 @@ function LocalServers({ servers, canEdit, onChanged }: { servers: LocalServer[];
                 />
                 Serve through the gateway
               </label>
+              {s.serve ? (
+                <label className="gw-switch gw-small" title={STREAM_USAGE_HELP}>
+                  <input
+                    type="checkbox"
+                    checked={s.injectUsage}
+                    disabled={!canEdit}
+                    onChange={(e) => void updateProvider(`local-${s.id}`, { injectUsage: e.target.checked }).then(onChanged, (err) => setError(String(err?.message || err)))}
+                  />
+                  Count tokens on streams
+                </label>
+              ) : null}
             </li>
           ))}
         </ul>
       )}
       {error ? <p className="gw-bad">{error}</p> : null}
     </section>
+  );
+}
+
+const PRICE_FIELDS: { k: keyof Prices; label: string }[] = [
+  { k: "in", label: "Input" },
+  { k: "out", label: "Output" },
+  { k: "cacheRead", label: "Cache read" },
+  { k: "cacheWrite", label: "Cache write" },
+];
+
+function fmtPrice(v: number | null) {
+  return v == null ? "-" : `$${v}`;
+}
+
+/** Shows a model's prices, or "No price set" with an inline field. */
+function PriceCell({ m, canEdit, onChanged }: { m: Model; canEdit: boolean; onChanged: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<Record<keyof Prices, string>>({ in: "", out: "", cacheRead: "", cacheWrite: "" });
+  const [error, setError] = useState<string | null>(null);
+  if (!m.needsPrice) return <span className="gw-muted gw-small">Energy cost</span>;
+  const priced = m.prices.in != null || m.prices.out != null;
+  const open = () => {
+    setDraft({ in: m.prices.in?.toString() ?? "", out: m.prices.out?.toString() ?? "", cacheRead: m.prices.cacheRead?.toString() ?? "", cacheWrite: m.prices.cacheWrite?.toString() ?? "" });
+    setError(null);
+    setEditing(true);
+  };
+  if (editing) {
+    const save = async () => {
+      const body: Partial<Prices> = {};
+      for (const { k } of PRICE_FIELDS) body[k] = draft[k].trim() === "" ? null : Number(draft[k]);
+      try {
+        await setModelPrices(m.id, body);
+        setEditing(false);
+        onChanged();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    };
+    return (
+      <form
+        className="gw-prices"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void save();
+        }}
+      >
+        {PRICE_FIELDS.map(({ k, label }) => (
+          <label key={k}>
+            <span className="gw-small">{label}</span>
+            <input className="field-input mono" inputMode="decimal" value={draft[k]} placeholder={k.startsWith("cache") ? "= input" : "$"} onChange={(e) => setDraft({ ...draft, [k]: e.target.value })} aria-label={`${m.name} ${label} price`} />
+          </label>
+        ))}
+        <div className="gw-row">
+          <button type="submit" className="btn btn--sm btn--primary">
+            Save
+          </button>
+          <button type="button" className="btn btn--sm btn--ghost" onClick={() => setEditing(false)}>
+            Cancel
+          </button>
+        </div>
+        {error ? <p className="gw-bad gw-small">{error}</p> : null}
+      </form>
+    );
+  }
+  return (
+    <span className="gw-pricecell">
+      {priced ? (
+        <span className="mono gw-small" title="Input / output / cache read / cache write">
+          {fmtPrice(m.prices.in)} / {fmtPrice(m.prices.out)}
+          {m.prices.cacheRead != null || m.prices.cacheWrite != null ? ` · cache ${fmtPrice(m.prices.cacheRead)} / ${fmtPrice(m.prices.cacheWrite)}` : ""}
+        </span>
+      ) : (
+        <span className="gw-chip gw-chip--warn">No price set</span>
+      )}
+      {canEdit ? (
+        <button type="button" className="btn btn--sm btn--ghost" onClick={open}>
+          {priced ? "Edit" : "Set price"}
+        </button>
+      ) : null}
+    </span>
   );
 }
 
@@ -314,6 +415,7 @@ function ModelList({ models, conflicts, canEdit, onChanged }: { models: Model[];
               <tr>
                 <th>Model</th>
                 <th>Provider</th>
+                <th title="US dollars per million tokens: input, output, cache read, cache write">Price per million tokens</th>
                 <th>On</th>
               </tr>
             </thead>
@@ -323,6 +425,9 @@ function ModelList({ models, conflicts, canEdit, onChanged }: { models: Model[];
                   <td className="mono">{m.name}</td>
                   <td>{m.providerName}</td>
                   <td>
+                    <PriceCell m={m} canEdit={canEdit} onChanged={onChanged} />
+                  </td>
+                  <td>
                     <input type="checkbox" aria-label={`${m.name} on`} checked={m.enabled} disabled={!canEdit} onChange={(e) => void setModelEnabled(m.id, e.target.checked).then(onChanged)} />
                   </td>
                 </tr>
@@ -331,7 +436,9 @@ function ModelList({ models, conflicts, canEdit, onChanged }: { models: Model[];
           </table>
         </div>
       )}
-      <p className="gw-muted gw-small">Prices come with usage and budgets.</p>
+      <p className="gw-muted gw-small">
+        Prices are US dollars per million tokens, as the provider bills them. sparkDash has no built-in price list. A request keeps the price it was charged at. Local models are costed from measured energy; own-subscription use shows as Subscription.
+      </p>
     </section>
   );
 }

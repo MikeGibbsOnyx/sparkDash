@@ -5,6 +5,7 @@ import { timingSafeEqual } from "node:crypto";
 import { redact } from "../../shared/redact.js";
 import { detectProvider } from "../providers/catalog.js";
 import { ProviderError } from "../providers/registry.js";
+import { safeZone } from "../usage/periods.js";
 
 function equal(a, b) {
   const x = Buffer.from(String(a || ""));
@@ -19,11 +20,19 @@ function equal(a, b) {
  * @param {import("../providers/registry.js").Providers} deps.providers
  * @param {import("../policy/grants.js").Grants} deps.grants
  * @param {import("../credentials/gatewayKeys.js").GatewayKeys} deps.keys
+ * @param {import("../usage/ledger.js").Usage} deps.usage
+ * @param {import("../policy/budgets.js").Budgets} deps.budgets
+ * @param {import("../usage/energy.js").Energy} deps.energy
  * @param {ReturnType<import("../config.js").loadConfig>} deps.config
  * @param {string} deps.version
  */
 export function createInternalHandler(deps) {
-  const { secret, state, providers, grants, keys, config, version } = deps;
+  const { secret, state, providers, grants, keys, usage, budgets, energy, config, version } = deps;
+  const RANGE_MS = { "24h": 86_400_000, "7d": 7 * 86_400_000, "30d": 30 * 86_400_000, all: null };
+  const sinceFor = (range) => {
+    const span = RANGE_MS[range] === undefined ? RANGE_MS["7d"] : RANGE_MS[range];
+    return span == null ? 0 : Date.now() - span;
+  };
 
   async function body(req) {
     const chunks = [];
@@ -56,6 +65,11 @@ export function createInternalHandler(deps) {
     for (const s of providers.localServers()) {
       if (!s.reachable) out.push({ id: `local-unreachable:${s.id}`, severity: "info", title: `The model server on ${s.machine} :${s.port} can't be served`, detail: s.fix, hint: s.fix });
     }
+    out.push(...budgets.findings());
+    const unpriced = usage.summary({ range: "7d", groupBy: "model" }).rows.filter((r) => r.unpricedRequests > 0);
+    if (unpriced.length) {
+      out.push({ id: "models-unpriced", severity: "info", title: `${unpriced.length === 1 ? `${unpriced[0].key} has` : `${unpriced.length} models have`} no price set`, detail: unpriced.map((r) => r.key).join(", "), hint: "Their requests count as $0 toward budgets. Set prices on the Models tab." });
+    }
     return out;
   }
 
@@ -69,13 +83,24 @@ export function createInternalHandler(deps) {
       providers: providers.list().length,
       localServed: providers.localServers().filter((s) => s.serve).length,
       models: providers.models().filter((m) => m.usable).length,
-      today: state.today(start.getTime()),
+      today: { ...state.today(start.getTime()), ...spendSince(start.getTime()) },
+      timeZone: state.timeZone,
       findings: findings(),
       personalKeys: state.personalKeys,
     };
   }
 
-  /** Admin routes: [method, regex, (match, body, actor) => result]. */
+  function spendSince(since) {
+    return usage.db
+      .prepare(
+        `SELECT coalesce(sum(CASE WHEN cost_basis = 'key' THEN cost_usd END), 0) AS cloudUsd, coalesce(sum(CASE WHEN cost_basis = 'local' THEN cost_usd END), 0) AS localUsd,
+                coalesce(sum(coalesce(in_tok, 0) + coalesce(out_tok, 0) + coalesce(cache_read_tok, 0) + coalesce(cache_write_tok, 0)), 0) AS tokens
+           FROM requests WHERE ts >= ?`
+      )
+      .get(since);
+  }
+
+  /** Admin routes: [method, regex, (match, body, actor, url) => result]. */
   const ADMIN = [
     ["GET", /^\/status$/, () => overview()],
     ["POST", /^\/enable$/, (_m, _b, actor) => {
@@ -94,24 +119,40 @@ export function createInternalHandler(deps) {
     ["POST", /^\/providers$/, (_m, b, actor) => providers.add({ type: b.type || detectProvider(b.key), key: b.key, name: b.name, baseUrl: b.baseUrl, actor, skipTest: Boolean(b.skipTest), saveAnyway: Boolean(b.saveAnyway) })],
     ["POST", /^\/providers\/([\w-]+)\/test$/, (m) => providers.retest(m[1])],
     ["PUT", /^\/providers\/([\w-]+)\/key$/, (m, b, actor) => providers.replace(m[1], b.key, actor)],
-    ["PATCH", /^\/providers\/([\w-]+)$/, (m, b, actor) => ({ provider: providers.update(m[1], { ownLogin: b.ownLogin, enabled: b.enabled }, actor) })],
+    ["PATCH", /^\/providers\/([\w:.-]+)$/, (m, b, actor) => ({ provider: providers.update(m[1], { ownLogin: b.ownLogin, enabled: b.enabled, injectUsage: b.injectUsage }, actor) })],
     ["GET", /^\/providers\/([\w-]+)\/impact$/, (m) => providers.impact(m[1])],
     ["DELETE", /^\/providers\/([\w-]+)$/, (m, _b, actor) => (providers.remove(m[1], actor), { ok: true })],
     ["GET", /^\/models$/, () => ({ models: providers.models(), conflicts: providers.conflicts() })],
     ["PATCH", /^\/models\/(\d+)$/, (m, b, actor) => (providers.setModelEnabled(Number(m[1]), Boolean(b.enabled), actor), { ok: true })],
+    ["PATCH", /^\/models\/(\d+)\/prices$/, (m, b, actor) => (providers.setModelPrices(Number(m[1]), b, actor), { model: providers.models().find((x) => x.id === Number(m[1])) })],
     ["GET", /^\/local-servers$/, () => ({ servers: providers.localServers() })],
     ["PATCH", /^\/local-servers\/([^/]+)$/, (m, b, actor) => ({ server: providers.setServe(decodeURIComponent(m[1]), Boolean(b.serve), actor) })],
     ["GET", /^\/keys$/, () => ({ keys: keys.list() })],
     ["POST", /^\/keys$/, (_m, b, actor) => keys.create({ name: b.name, access: b.access || null, expiry: b.expiry ?? "90", createdBy: actor })],
     ["DELETE", /^\/keys\/(\d+)$/, (m, _b, actor) => ({ key: keys.revoke(Number(m[1]), actor) })],
     ["GET", /^\/grants$/, () => ({ grants: grants.list() })],
-    ["GET", /^\/settings$/, () => ({ personalKeys: state.personalKeys })],
+    ["POST", /^\/grants$/, (_m, b, actor) => ({ grant: grants.create(b, actor) })],
+    ["PATCH", /^\/grants\/(\d+)$/, (m, b, actor) => ({ grant: grants.update(Number(m[1]), b, actor) })],
+    ["DELETE", /^\/grants\/(\d+)$/, (m, _b, actor) => (grants.remove(Number(m[1]), actor), { ok: true })],
+    // Who would gain or lose access. Body: { id?, draft? } (no draft = the grant removed).
+    ["POST", /^\/grants\/preview$/, (_m, b) =>
+      grants.preview({ id: b.id == null ? null : Number(b.id), draft: b.draft ?? null }, { directory: state.directory(), keys: keys.list(), models: providers.models().filter((x) => x.usable).map((x) => x.name) })],
+    ["GET", /^\/budgets$/, () => ({ budgets: budgets.list(), timeZone: state.timeZone })],
+    ["POST", /^\/budgets$/, (_m, b, actor) => ({ budget: budgets.create(b, actor) })],
+    ["PATCH", /^\/budgets\/(\d+)$/, (m, b, actor) => ({ budget: budgets.update(Number(m[1]), b, actor) })],
+    ["DELETE", /^\/budgets\/(\d+)$/, (m, _b, actor) => (budgets.remove(Number(m[1]), actor), { ok: true })],
+    ["GET", /^\/usage$/, (_m, _b, _a, url) => usage.summary({ range: url.searchParams.get("range") || "7d", groupBy: url.searchParams.get("groupBy") || "person" })],
+    ["GET", /^\/usage\/daily$/, (_m, _b, _a, url) => usage.daily({ range: url.searchParams.get("range") || "30d" })],
+    ["GET", /^\/usage\/energy$/, (_m, _b, _a, url) => energy.summary(sinceFor(url.searchParams.get("range") || "7d"))],
+    // Gateway traffic to local models, for the Token totals page.
+    ["GET", /^\/usage\/local$/, (_m, _b, _a, url) => ({ models: usage.localTotals(url.searchParams.has("since") ? Number(url.searchParams.get("since")) || 0 : sinceFor(url.searchParams.get("range") || "all")) })],
+    ["GET", /^\/settings$/, () => ({ personalKeys: state.personalKeys, timeZone: state.timeZone })],
     ["PATCH", /^\/settings$/, (_m, b, actor) => {
       if (b.personalKeys !== undefined) {
         state.set("personal_keys", Boolean(b.personalKeys));
         state.audit(actor, "settings.personal_keys", null, b.personalKeys ? "on" : "off");
       }
-      return { personalKeys: state.personalKeys };
+      return { personalKeys: state.personalKeys, timeZone: state.timeZone };
     }],
   ];
 
@@ -134,6 +175,18 @@ export function createInternalHandler(deps) {
         providers.setInventory(Array.isArray(b.servers) ? b.servers : []);
         return send(200, { ok: true, servers: providers.localServers().length });
       }
+      if (req.method === "POST" && p === "/internal/energy") {
+        // Each minute: the Settings time zone and electricity rate, and each machine's energy.
+        const b = await body(req);
+        if (typeof b.timeZone === "string" && b.timeZone && safeZone(b.timeZone) === b.timeZone && b.timeZone !== state.timeZone) {
+          state.set("time_zone", b.timeZone);
+          usage.rebuildDaily();
+          budgets.reset();
+        }
+        const stored = energy.ingest({ rate: b.rate == null ? null : Number(b.rate), minutes: b.minutes });
+        energy.settle();
+        return send(200, { ok: true, stored });
+      }
       if (req.method === "GET" && p === "/internal/events") {
         keys.takeExpiryWarnings();
         return send(200, { events: state.eventsSince(url.searchParams.get("since")) });
@@ -145,7 +198,7 @@ export function createInternalHandler(deps) {
           const m = re.exec(sub);
           if (m && method === req.method) {
             const b = method === "GET" || method === "DELETE" ? {} : await body(req);
-            return send(200, await fn(m, b, actor));
+            return send(200, await fn(m, b, actor, url));
           }
         }
       }

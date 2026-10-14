@@ -5,6 +5,7 @@ import crypto from "node:crypto";
 import { llmProbeHost } from "../collectors/llmHost.js";
 import { createGatewayClient, GatewayDown } from "./client.js";
 import { publish, publishStatus } from "./publish.js";
+import { createEnergyPusher } from "./energy.js";
 
 const GATEWAY_PORT = Number(process.env.GATEWAY_PORT || 5556);
 
@@ -34,6 +35,22 @@ export function describeEvent(e) {
       return { severity: "warn", message: `Gateway key ${t} expires ${String(d).slice(0, 10)}` };
     case "local_server.serve":
       return { severity: "info", message: `${who} turned ${d} serving ${t} through the gateway` };
+    case "budget.warning":
+      return { severity: "warn", message: `Budget ${t} is past its warning level: ${d}` };
+    case "budget.exhausted":
+      return { severity: "warn", message: `Budget ${t} is used up; requests it covers are refused until it ${d}` };
+    case "budget.created":
+    case "budget.changed":
+      return { severity: "info", message: `${who} ${e.action === "budget.created" ? "created" : "changed"} budget ${t} (${d})` };
+    case "budget.removed":
+      return { severity: "info", message: `${who} removed budget ${t}` };
+    case "grant.created":
+    case "grant.changed":
+      return { severity: "info", message: `${who} ${e.action === "grant.created" ? "created" : "changed"} grant ${t} (${d})` };
+    case "grant.removed":
+      return { severity: "warn", message: `${who} removed grant ${t}` };
+    case "model.price":
+      return { severity: "info", message: `${who} set the price of ${t}: ${d}` };
     default:
       return { severity: "info", message: `${who}: ${e.action}${t ? ` ${t}` : ""}${d ? ` (${d})` : ""}` };
   }
@@ -47,10 +64,13 @@ export function describeEvent(e) {
  * @param {{ getSpark: (id: string) => object, getLlmApiKey: (id: string, port: number) => string | undefined }} deps.registry
  * @param {(event: object) => void} deps.recordEvent
  * @param {ReturnType<typeof createGatewayClient>} [deps.client]
+ * @param {object} [deps.energyTracker]       FleetEnergyTracker, for local energy cost
+ * @param {() => object} [deps.getSettings]   Observer settings (electricity price, time zone)
  */
 export function createGatewayBridge(deps) {
   const { directory, db, orderedSnapshots, registry, recordEvent } = deps;
   const client = deps.client || createGatewayClient();
+  const energy = createEnergyPusher({ tracker: deps.energyTracker, orderedSnapshots, registry, getSettings: deps.getSettings || (() => ({})), client });
   let lastInventoryHash = "";
   let lastStatus = { up: false, error: "Not checked yet." };
   const timers = [];
@@ -173,7 +193,11 @@ export function createGatewayBridge(deps) {
     every(30_000, () => pushInventory(false));
     every(30_000, importEvents);
     every(5 * 60_000, () => pushInventory(true));
+    every(15_000, () => {
+      energy.sample();
+      return energy.push();
+    });
   }
 
-  return { registerRoutes, start, stop: () => timers.forEach(clearInterval), pushDirectory, pushInventory, importEvents, inventory, status };
+  return { registerRoutes, start, stop: () => timers.forEach(clearInterval), pushDirectory, pushInventory, importEvents, inventory, status, energy };
 }
