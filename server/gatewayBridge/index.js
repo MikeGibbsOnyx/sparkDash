@@ -184,6 +184,8 @@ export function createGatewayBridge(deps) {
       const sub = req.path.slice("/api/gateway/admin".length);
       try {
         const r = await client.call(req.method, `/internal/admin${sub}`, req.method === "GET" || req.method === "DELETE" ? undefined : req.body ?? {}, req.access?.label || "sparkDash");
+        // Content reads are audited: bring that event into Activity now, like admin changes.
+        if (req.method === "GET" && r.status < 300 && /^\/requests\/\d+\/content$/.test(sub)) void importEvents();
         if (req.method !== "GET" && r.status < 300) {
           // An admin change may have produced audit events; bring them into Activity now.
           void importEvents();
