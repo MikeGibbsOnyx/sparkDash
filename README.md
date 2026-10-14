@@ -370,6 +370,7 @@ On the tailnet the key is the literal `sparkdash`; the Gateway uses your Tailsca
 
 - **Requests tab**: every request with its person, tool, model, status, timing, tokens, cost and guardrail hits; **Export JSONL** (metadata only).
 - **Capture** (Privacy and guardrails tab): **Metadata only** by default, so prompts and responses are never written to disk. **Full capture** also stores each request and response for 7 days (adjustable), readable by Admins and Auditors; every view is logged with the viewer's name in Activity. Records are kept 400 days (adjustable) and purged hourly.
+- **MCP proxy**: add remote MCP servers on the **MCP** tab, then give people one command: `claude mcp add --transport http sparkdash https://<machine>.<tailnet>.ts.net:8443/mcp`. Tools show as `<server>__<tool>`; grants' **MCP tools** patterns decide who sees which. Upstream credentials stay in the Gateway. Remote (Streamable HTTP) servers only.
 - **Guardrails** (off by default): detectors for email, phone, payment cards, SSN/SIN and secrets, plus your own patterns, each set to Flag, Redact or Block; tool blocking by name; and an optional pre-request hook. For coding agents prefer Flag or Block: redaction changes what the model reads.
 
 ## Mobile PWA (install on a phone)

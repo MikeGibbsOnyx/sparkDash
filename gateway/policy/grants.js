@@ -61,6 +61,11 @@ export class Grants {
     return this.forCaller(who).some((g) => g.modelPatterns.some((p) => globMatch(p, modelName)));
   }
 
+  /** MCP tools are named <server>__<tool>; grants match them with their MCP patterns. */
+  allowsTool(who, toolName) {
+    return this.forCaller(who).some((g) => (g.mcpPatterns || []).some((p) => globMatch(p, toolName)));
+  }
+
   // ─── Editing ────────────────────────────────────────────
   #validate(b) {
     const name = String(b.name || "").trim().slice(0, 80);
@@ -75,7 +80,7 @@ export class Grants {
         throw new GrantError(400, `"${sel}" isn't a selector. Use *, a login, group:<name>, tag:<name>, key:<name> or local.`);
       }
     }
-    if (!modelPatterns.length && !mcpPatterns.length) throw new GrantError(400, "Add at least one model pattern, such as claude-* or spark-1/*.");
+    if (!modelPatterns.length && !mcpPatterns.length) throw new GrantError(400, "Add at least one model pattern (such as claude-* or spark-1/*) or MCP tool pattern (such as github__*).");
     return { name, selectors, modelPatterns, mcpPatterns };
   }
 

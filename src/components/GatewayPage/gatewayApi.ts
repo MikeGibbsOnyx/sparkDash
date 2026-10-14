@@ -235,3 +235,26 @@ export const removeDetector = (id: string) => admin<{ guardrails: GuardrailConfi
 export const saveBlockedTools = (blockedTools: string[]) => admin<{ guardrails: GuardrailConfig }>("/guardrails/tools", "PUT", { blockedTools });
 export const saveHook = (b: { url: string; failOpen: boolean } | null) => admin<{ guardrails: GuardrailConfig }>("/guardrails/hook", "PUT", b ?? {});
 export const testDetectors = (text: string, pattern?: string, flags?: string) => admin<{ redacted: string; hits: GuardrailHit[] }>("/guardrails/test", "POST", { text, pattern, flags });
+
+// ─── Phase 5: MCP servers ─────────────────────────────────
+export type McpServer = {
+  id: number;
+  name: string;
+  url: string;
+  enabled: boolean;
+  status: "Connected" | "Failing" | "Not tested";
+  lastError: string | null;
+  lastTestedAt: number | null;
+  toolCount: number;
+  tools: string[];
+  headerName: string | null;
+  headerLast4: string | null;
+  addedBy: string | null;
+  addedAt: number;
+};
+export type McpSaveResult = { saved?: boolean; replaced?: boolean; ok: boolean; message: string; details?: string; server?: McpServer };
+export const fetchMcpServers = () => admin<{ servers: McpServer[] }>("/mcp-servers");
+export const addMcpServer = (b: { name?: string; url: string; headerName?: string; headerValue?: string; saveAnyway?: boolean }) => admin<McpSaveResult>("/mcp-servers", "POST", b);
+export const testMcpServer = (id: number) => admin<McpSaveResult>(`/mcp-servers/${id}/test`, "POST");
+export const updateMcpServer = (id: number, b: { enabled?: boolean; headerName?: string; headerValue?: string }) => admin<McpSaveResult>(`/mcp-servers/${id}`, "PATCH", b);
+export const removeMcpServer = (id: number) => admin(`/mcp-servers/${id}`, "DELETE");

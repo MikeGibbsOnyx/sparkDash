@@ -16,6 +16,7 @@ import { createUsageChunkFilter, injectIncludeUsage } from "./usage/includeUsage
 import { costOf, priceSnapshot, totalTokens } from "./usage/ledger.js";
 import { requestedMaxOutput } from "./policy/budgets.js";
 import { BODY_CAP, storedHeaders } from "./logging/capture.js";
+import { createMcpEndpoint } from "./mcp/endpoint.js";
 
 const STATIC_TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".woff2": "font/woff2", ".json": "application/json", ".ico": "image/x-icon", ".webmanifest": "application/manifest+json" };
 
@@ -30,6 +31,7 @@ const STATIC_TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascr
  * @param {import("./policy/budgets.js").Budgets} deps.budgets
  * @param {import("./guardrails/index.js").Guardrails} deps.guardrails
  * @param {import("./logging/capture.js").CaptureStore} deps.capture
+ * @param {import("./mcp/servers.js").McpServers} deps.mcp
  * @param {(ip: string, port?: number) => Promise<object | null>} deps.whois
  * @param {import("undici").Agent} deps.agent
  * @param {(line: string) => void} [deps.log]
@@ -38,6 +40,7 @@ export function createPublicHandler(deps) {
   const { config, state, providers, grants, keys, whois, agent, usage, budgets, guardrails, capture } = deps;
   const log = deps.log || ((line) => console.log(line));
   const allow = createRateLimiter(config.ratePerMinute);
+  const mcpEndpoint = createMcpEndpoint({ servers: deps.mcp, grants, usage, capture, state, version: deps.version || "0", log });
 
   /** Who is calling, as grants see them. */
   async function identify(req, url) {
@@ -388,7 +391,13 @@ export function createPublicHandler(deps) {
       const route = classify(req.method, url.pathname);
       const isModelsList = req.method === "GET" && (url.pathname === "/v1/models" || url.pathname === "/v1beta/models");
       const isMe = url.pathname === "/me" || url.pathname.startsWith("/me/");
-      if (!route && !isModelsList && !isMe) {
+      const isMcp = url.pathname === "/mcp";
+      if (isMcp && req.method !== "POST") {
+        // No server-initiated messages: there is no stream to open, and no session to end.
+        res.writeHead(405, { allow: "POST", "content-type": "application/json" });
+        return res.end(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32000, message: "Use POST: this MCP endpoint doesn't send server-initiated messages." } }));
+      }
+      if (!route && !isModelsList && !isMe && !isMcp) {
         if (req.method === "GET" || req.method === "HEAD") return serveStatic(req, res, url);
         return sendError(res, family, 404, `The Gateway doesn't serve ${req.method} ${url.pathname}.`);
       }
@@ -399,6 +408,14 @@ export function createPublicHandler(deps) {
       if (!allow(ctx.who.label)) return sendError(res, family, 429, `Too many requests from ${ctx.who.label} (over ${config.ratePerMinute} a minute). Slow down and try again shortly.`, { "retry-after": "10" });
 
       if (isMe) return await me(req, res, url, ctx);
+      if (isMcp) {
+        const raw = await readBody(req, 4 * 1024 * 1024);
+        if (!raw) {
+          res.writeHead(413, { "content-type": "application/json" });
+          return res.end(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32600, message: "The request is larger than 4 MB." } }));
+        }
+        return await mcpEndpoint(req, res, ctx.who, raw, clientFromUserAgent(req.headers["user-agent"]));
+      }
       if (isModelsList) return listModels(req, res, ctx.who, url.pathname.startsWith("/v1beta/"));
       return await proxy(req, res, url, route, ctx);
     } catch (err) {

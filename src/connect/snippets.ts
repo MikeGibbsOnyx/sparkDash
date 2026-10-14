@@ -115,7 +115,14 @@ export function snippetFor(i: SnippetInput): Snippet {
         },
       ];
     case "mcp":
-      return [{ title: "Coming with the MCP proxy", code: `claude mcp add --transport http sparkdash ${url}/mcp`, note: "The gateway's MCP endpoint arrives in a later release." }];
+      return [
+        {
+          title: "Claude Code",
+          code: key && key !== "sparkdash" ? `claude mcp add --transport http sparkdash ${url}/mcp --header "Authorization: Bearer ${key}"` : `claude mcp add --transport http sparkdash ${url}/mcp`,
+          note: "Tools appear as sparkdash's <server>__<tool>; you see the ones your access allows. On the tailnet no key is needed.",
+        },
+        { title: "Any MCP client (Streamable HTTP)", code: `${url}/mcp` },
+      ];
   }
 }
 

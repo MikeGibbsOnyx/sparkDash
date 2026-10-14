@@ -54,7 +54,7 @@ export function sendError(res, family, status, message, extraHeaders = {}, { quo
 /** Which tool is calling, for usage and the Connect page's live line. */
 export function clientFromUserAgent(ua) {
   const s = String(ua || "");
-  if (/claude-cli\//i.test(s)) return "Claude Code";
+  if (/claude-cli\/|claude-code\//i.test(s)) return "Claude Code"; // claude-code/… is its MCP client
   if (/claude-desktop|Claude\/[\d.]+ .*Electron/i.test(s)) return "Claude Desktop";
   if (/codex_/i.test(s)) return "Codex";
   if (/GeminiCLI/i.test(s)) return "Gemini CLI";

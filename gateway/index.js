@@ -21,6 +21,7 @@ import { Energy } from "./usage/energy.js";
 import { Guardrails } from "./guardrails/index.js";
 import { CaptureStore } from "./logging/capture.js";
 import { checkOutboundUrl } from "./security.js";
+import { McpServers } from "./mcp/servers.js";
 import { createUpstreamAgent } from "./proxy/forward.js";
 import { createPublicHandler } from "./app.js";
 import { createInternalHandler } from "./internal/server.js";
@@ -49,11 +50,12 @@ export function createGateway(config, opts = {}) {
   });
   const guardrails = new Guardrails(db, { state, audit: state.audit, fetchImpl: opts.fetchImpl, checkUrl: opts.checkUrl || checkOutboundUrl });
   const capture = new CaptureStore({ dataDir: config.dataDir, state, db, audit: state.audit });
+  const version = JSON.parse(fs.readFileSync(path.join(config.root, "package.json"), "utf8")).version;
+  const mcp = new McpServers(db, { vault, audit: state.audit, fetchImpl: opts.mcpFetch, checkUrl: opts.checkUrl || checkOutboundUrl, version });
   const whois = opts.whois || createWhois({ socketPath: config.tailscaledSocket, cli: null });
   const agent = createUpstreamAgent(config);
-  const version = JSON.parse(fs.readFileSync(path.join(config.root, "package.json"), "utf8")).version;
-  const publicHandler = createPublicHandler({ config, state, providers, grants, keys, whois, agent, usage, budgets, guardrails, capture, log: opts.log });
-  return { db, state, providers, grants, keys, usage, budgets, energy, guardrails, capture, agent, version, publicHandler };
+  const publicHandler = createPublicHandler({ config, state, providers, grants, keys, whois, agent, usage, budgets, guardrails, capture, mcp, version, log: opts.log });
+  return { db, state, providers, grants, keys, usage, budgets, energy, guardrails, capture, mcp, agent, version, publicHandler };
 }
 
 /** Create the internal socket and its secret (0600), readable by the Observer. */
