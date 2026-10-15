@@ -18,6 +18,7 @@ import {
   parseGpuGraphicsCeilingMHz,
   parseGpuSetClocksReply,
   isClockHelperDoneReply,
+  parseClockHelperReply,
 } from "./clockControl.js";
 import {
   WINDOWS_GPU_SCRIPT,
@@ -60,6 +61,10 @@ export function parseKernelErrors(raw) {
  * share one unit (cpu-clock-cap.service writes per-core values for both);
  * the GPU lock has its own.
  */
+/** Why clock control is unavailable on a unit with no SSH settings. */
+const CLOCK_NEEDS_SSH_REASON =
+  "clock control runs the host helper over SSH — set this unit's SSH host and user (a local unit too), then run scripts/sparkdash-clock-addon/install-clock-helper.sh as that user";
+
 const CLOCK_DOMAIN_UNIT = {
   "cpu-big": "cpu-clock-cap.service",
   "cpu-little": "cpu-clock-cap.service",
@@ -483,7 +488,11 @@ export class SystemCollector {
     const lines = [];
     for (const e of entries) {
       if (!/^cpu\d+$/.test(e)) continue;
-      const cap = this._readSysFile(path.join(cpuDir, e, "cpufreq/max_perf"));
+      // max_perf where the platform has it; scaling_max_freq on cppc_cpufreq
+      // hosts without a max_perf node (same fallback the helper writes).
+      const cap =
+        this._readSysFile(path.join(cpuDir, e, "cpufreq/max_perf")) ??
+        this._readSysFile(path.join(cpuDir, e, "cpufreq/scaling_max_freq"));
       const max = this._readSysFile(path.join(cpuDir, e, "cpufreq/cpuinfo_max_freq"));
       if (cap != null && max != null) lines.push(`${e}:${cap.trim()}:${max.trim()}`);
     }
@@ -522,7 +531,7 @@ export class SystemCollector {
     return [
       // Command substitution strips sysfs trailing newlines so each core is one
       // `cpuN:max_perf:cpuinfo_max_freq` line (echo -n + cat splits them).
-      "for d in /sys/devices/system/cpu/cpu*/cpufreq; do n=${d#/sys/devices/system/cpu/}; n=${n%/cpufreq}; echo \"$n:$(cat $d/max_perf 2>/dev/null):$(cat $d/cpuinfo_max_freq 2>/dev/null)\"; done",
+      "for d in /sys/devices/system/cpu/cpu*/cpufreq; do n=${d#/sys/devices/system/cpu/}; n=${n%/cpufreq}; c=$(cat $d/max_perf 2>/dev/null || cat $d/scaling_max_freq 2>/dev/null); echo \"$n:$c:$(cat $d/cpuinfo_max_freq 2>/dev/null)\"; done",
       "echo '---'",
       `cat ${unitPath} 2>/dev/null || true`,
     ].join("; ");
@@ -768,22 +777,10 @@ export class SystemCollector {
   }
 
   /**
-   * Which apply paths this Spark can use right now (D4). 'helper' = the
-   * privileged host helper over SSH (all units); 'container' = the container's
-   * own root path (local privileged container only). Null when neither applies.
-   */
-  _clockControlPaths() {
-    const paths = [];
-    if (this.spark.isLocal) paths.push("helper", "container");
-    else paths.push("helper");
-    return paths;
-  }
-
-  /**
    * Check whether the privileged helper is installed and allowed by sudo
-   * (cheap SSH probe). The probe exercises EXACTLY the scoped grant shipped
-   * by scripts/sparkdash-clock-addon/install-clock-helper.sh — an argumentless run of the helper
-   * binary — never `sudo -n true`, which no scoped sudoers file permits.
+   * (cheap SSH probe). The probe runs the pinned no-op `--check` form of the
+   * scoped grant shipped by scripts/sparkdash-clock-addon/install-clock-helper.sh
+   * — never `sudo -n true`, which no scoped sudoers file permits.
    * Returns { available, checked, reason }.
    */
   async checkClockHelper() {
@@ -792,6 +789,11 @@ export class SystemCollector {
     }
     this._clockHelperState = { at: Date.now(), state: null }; // in-flight marker
     let state;
+    if (!this._hasClockSsh()) {
+      state = { available: false, checked: true, reason: CLOCK_NEEDS_SSH_REASON };
+      this._clockHelperState = { at: Date.now(), state };
+      return state;
+    }
     try {
       const out = await sshExec(
         this.spark,
@@ -811,27 +813,13 @@ export class SystemCollector {
   }
 
   /**
-   * Apply a clock cap (D4). Tries the SSH helper first; for local units falls
-   * back to the container's own root path. Returns the D1 response body:
+   * Apply a clock cap (D4) through the privileged host helper over SSH. There
+   * is exactly one apply path: the helper (the container never writes host
+   * sysfs or boot units itself). Returns the D1 response body:
    * { ok, domain, requestedMHz, appliedMHz, snapped, persisted, bootUnit,
-   *   source, warnings } or { ok:false, status, reason } on failure.
-   * Never claims persistence it did not perform, and never reports a value
-   * that was not actually observed on the hardware when an observation was
-   * possible (item 6, requested-vs-applied honesty):
-   *  - GPU: nvidia-smi's own set-to confirmation on the apply stdout (helper
-   *    and container paths) is the driver's truth — the REAL line is
-   *    `GPU clocks set to "(gpuClkMin 0, gpuClkMax 2200)" for GPU …` and the
-   *    driver silently quantises -lgc requests (a requested 2000 can land on
-   *    1976). Bare-paren shapes stay accepted for compatibility.
-   *  - CPU: each max_perf write is read back; the strictest observed value
-   *    becomes appliedMHz.
-   *  - When no observation was possible, appliedMHz stays the requested
-   *    (post-clamp) value and the response carries an explicit
-   *    "could not be verified" warning instead of a silent pass.
-   *
-   * @param {{ domain: string, maxMHz: number | null, persist: boolean }} req
-   * @param {{ hardMinMHz?: number, hardMaxMHz?: number }} [bounds] live bounds
-   *        for clamping (server-side, mandatory — D2)
+   *   source, warnings, verified } or { ok:false, status, reason } on failure.
+   * `persisted` is what the helper REPORTED (persisted=<0|1>), never the
+   * request flag; `appliedMHz` is the hardware read-back when one exists.
    */
   async applyClockCap(req, bounds = {}) {
     const warnings = [];
@@ -840,301 +828,101 @@ export class SystemCollector {
     const appliedMHz =
       maxMHz == null ? null : clampClockCap(maxMHz, bounds.hardMinMHz, bounds.hardMaxMHz, { warnings });
 
-    // Primary: privileged helper over SSH (mirrors the shutdown feature).
+    // One route for every unit, local included: SSH to the host as the
+    // unit's configured SSH user. A unit without SSH settings cannot reach
+    // the helper — say so plainly instead of failing inside the transport.
+    if (!this._hasClockSsh()) {
+      return {
+        ok: false,
+        status: 423,
+        reason: CLOCK_NEEDS_SSH_REASON,
+      };
+    }
     const helperCmd = buildClockHelperArgv({ domain, maxMHz: appliedMHz, persist }, {
       helperBin: SPARKDASH_CLOCK_BIN,
     });
+    let helperOut;
     try {
-      let helperOut = await this._sshExec(this.spark, helperCmd, { timeoutMs: 12000 });
-      // Positive completion gate: the GPU helper ends nvidia-smi's transcript
-      // with "All done." — an apply without it is unfinished work, not a
-      // success. CPU domains are silent by design (sysfs writes only), and
-      // GPU removal (-rgc) prints the completion line with no set-to line.
-      // Gating out throws, which interpretHelperExit maps to 502 so the
-      // container path below can observe or refuse for itself.
-      if (domain !== "gpu" || isClockHelperDoneReply(helperOut)) {
-        // A removal has no value to verify — skip the read-back entirely so a
-        // CPU sysfs echo of the hardware maximum can never masquerade as the
-        // "confirmed" cap (the container path applies the same rule).
-        const verified = appliedMHz == null ? null : await this._verifyAppliedClockCap(domain, helperOut);
-        // The driver's confirmation (when observed) is the applied truth; a
-        // removal (maxMHz:null) holds no cap — there is nothing to verify
-        // and nothing to quantify, so no honesty warnings fire for it.
-        const finalMHz = verified == null ? appliedMHz : verified;
-        if (appliedMHz != null) {
-          if (verified == null) {
-            warnings.push(
-              "the applied value could not be read back from the hardware; it is reported as requested"
-            );
-          }
-          if (verified != null && verified !== appliedMHz) {
-            warnings.push(
-              `the driver accepted ${verified} MHz for a request of ${appliedMHz} MHz (it quantises clock requests to its own table)`
-            );
-          }
-        }
-        if (persist) this._clockCapsOverride = {}; // persisted → drop all volatile state
-        else if (domain === "gpu") this._clockCapsOverride.gpu = finalMHz;
-        else this._clockCapsOverride[domain] = finalMHz;
-        return {
-          ok: true,
-          domain,
-          requestedMHz,
-          appliedMHz: finalMHz,
-          snapped: requestedMHz != null && finalMHz !== requestedMHz,
-          persisted: Boolean(persist),
-          bootUnit: persist ? CLOCK_DOMAIN_UNIT[domain] ?? null : null,
-          source: "helper",
-          warnings,
-        };
-      }
-      throw new Error("clock helper did not finish (no completion line in its output)");
+      helperOut = await this._sshExec(this.spark, helperCmd, { timeoutMs: 12000 });
     } catch (helperErr) {
       const interpreted = interpretHelperExit(helperErr);
-      // Local fallback (D4 secondary): the container runs as root with a rw
-      // /sys and nvidia-smi; live apply needs no sudo at all. Persistence goes
-      // through nsenter into the host mount namespace.
-      if (this.spark.isLocal && (interpreted.status === 423 || interpreted.status === 502)) {
-        try {
-          return await this._applyClockCapLocal(domain, appliedMHz, persist, warnings, helperErr, requestedMHz);
-        } catch (localErr) {
-          return {
-            ok: false,
-            status: 502,
-            reason: `helper failed (${interpreted.reason}); local fallback failed (${localErr.message || localErr})`,
-          };
-        }
-      }
       return { ok: false, status: interpreted.status, reason: interpreted.reason };
     }
-  }
-
-  /**
-   * Local container-root apply path (D4 secondary). Live: write max_perf /
-   * nvidia-smi -lgc|-rgc through the container's own (rw, privileged) view —
-   * the container's /sys is the host sysfs remounted rw, NOT the read-only
-   * /host/sys bind. Persist: nsenter into the host mount namespace and
-   * rewrite the boot unit there (no systemctl in the container).
-   */
-  async _applyClockCapLocal(domain, appliedMHz, persist, warnings, helperErr, requestedMHz = null) {
-    let bootUnit = null;
-    // Honesty tracking (item 6): the driver's own confirmation line and the
-    // per-core read-back of what sysfs actually accepted.
-    let smiOut = "";
-    const readBackKhz = [];
-    if (domain === "gpu") {
-      const smi = this._nvidiaSmiPath || "nvidia-smi";
-      if (appliedMHz == null) {
-        await this._exec(`${smi} -rgc`);
-      } else {
-        smiOut = await this._exec(`${smi} -lgc 0,${appliedMHz}`);
-      }
-      bootUnit = CLOCK_DOMAIN_UNIT.gpu;
-    } else {
-      const cores = this._cpuDomainCores(domain);
-      if (!cores.length) {
-        throw new Error("no CPU cores discovered for this domain");
-      }
-      // Remove-cap = write each core's own hardware maximum (never a 0 sentinel).
-      // Container /sys (rw) — not HOST_PATHS.SYS, which is the ro host bind.
-      const cpuDir = "/sys/devices/system/cpu";
-      for (const cpuN of cores) {
-        const p = path.join(cpuDir, cpuN, "cpufreq/max_perf");
-        try {
-          if (appliedMHz == null) {
-            const max = this._readSysFile(path.join(cpuDir, cpuN, "cpufreq/cpuinfo_max_freq"));
-            if (max == null) throw new Error(`cannot read cpuinfo_max_freq for ${cpuN}`);
-            fs.writeFileSync(p, `${max.trim()}\n`);
-          } else {
-            fs.writeFileSync(p, `${appliedMHz * 1000}\n`);
-          }
-        } catch (err) {
-          throw new Error(`max_perf write failed for ${cpuN}: ${err.message}`);
-        }
-        // Read back what sysfs kept. cppc_cpufreq clamps writes to its own
-        // table, so the file may not echo the value we pushed.
-        const back = this._readSysFile(p);
-        const n = back != null ? parseInt(String(back).trim(), 10) : NaN;
-        if (Number.isFinite(n) && n > 0) readBackKhz.push(n);
-      }
-      bootUnit = CLOCK_DOMAIN_UNIT[domain];
+    // Positive completion gate: every successful helper run ends with
+    // "All done." (nvidia-smi prints it for GPU; the helper itself prints it
+    // last for every domain). Without it the apply is unfinished work.
+    if (!isClockHelperDoneReply(helperOut)) {
+      return {
+        ok: false,
+        status: 502,
+        reason: "clock helper did not finish (no completion line in its output)",
+      };
     }
-
-    let persisted = false;
-    if (persist) {
-      try {
-        await this._persistClockUnitLocal(domain, appliedMHz);
-        persisted = true;
-      } catch (err) {
-        warnings.push(
-          `applied live but could not persist the boot unit: ${err.message || err} — reverts on reboot`
-        );
-      }
-    } else {
+    const reply = parseClockHelperReply(helperOut);
+    const persisted = reply.persisted === true;
+    if (persist && !persisted) {
+      warnings.push("applied live but the boot unit could not be saved — reverts on reboot");
+    } else if (!persist) {
       warnings.push("applied this boot only — reverts on reboot");
     }
 
-    // Determine the value the hardware ACTUALLY holds now (item 6).
+    // A removal holds no cap: nothing to verify, nothing to quantify.
+    let verified = appliedMHz == null;
     let finalMHz = appliedMHz;
-    let verified = false;
-    if (appliedMHz == null) {
-      // A removal (maxMHz:null) holds no cap — nothing to verify and nothing
-      // to quantify. A CPU read-back after a removal just echoes the hardware
-      // maximum each core was written with (never an "accepted" value), and
-      // `-rgc` prints no set-to line at all.
-      verified = true;
-    } else if (domain === "gpu") {
-      const confirmed = parseGpuSetClocksReply(smiOut);
-      if (confirmed != null) {
-        finalMHz = confirmed;
+    if (appliedMHz != null) {
+      const observed = this._verifyAppliedClockCap(domain, helperOut);
+      if (observed != null) {
+        finalMHz = observed;
         verified = true;
+      } else {
+        warnings.push(
+          "the applied value could not be read back from the hardware; it is reported as requested"
+        );
       }
-    } else if (readBackKhz.length) {
-      // Strictest observed ceiling across the domain's cores is what applies.
-      finalMHz = Math.round(Math.min(...readBackKhz) / 1000);
-      verified = true;
-    }
-    if (!verified && appliedMHz != null) {
-      warnings.push(
-        "the applied value could not be read back from the hardware; it is reported as requested"
-      );
-    }
-    if (appliedMHz != null && finalMHz !== appliedMHz) {
-      warnings.push(
-        `the hardware accepted ${finalMHz} MHz for a request of ${appliedMHz} MHz (it quantises clock requests to its own table)`
-      );
+      if (finalMHz !== appliedMHz) {
+        warnings.push(
+          `the driver accepted ${finalMHz} MHz for a request of ${appliedMHz} MHz (it quantises clock requests to its own table)`
+        );
+      }
     }
 
-    // Record the volatile override so the UI shows the truth until a fresh
-    // read converges (D5). Only for values the unit-file read cannot see.
-    if (!persisted) {
-      if (domain === "gpu") this._clockCapsOverride.gpu = finalMHz;
-      else this._clockCapsOverride[domain] = finalMHz;
-    } else {
-      this._clockCapsOverride = {};
-    }
-
+    if (persisted) this._clockCapsOverride = {}; // boot unit is now the truth
+    else if (domain === "gpu") this._clockCapsOverride.gpu = finalMHz;
+    else this._clockCapsOverride[domain] = finalMHz;
     return {
       ok: true,
       domain,
       requestedMHz,
       appliedMHz: finalMHz,
-      snapped: finalMHz !== requestedMHz,
+      snapped: requestedMHz != null && finalMHz !== requestedMHz,
       persisted,
-      bootUnit,
-      source: "container",
+      bootUnit: persisted ? CLOCK_DOMAIN_UNIT[domain] ?? null : null,
+      source: "helper",
+      verified,
+      knobs: reply.cores.map((c) => ({ core: c.core, knob: c.knob })),
       warnings,
     };
   }
 
-  /**
-   * Read back the value the hardware ACTUALLY holds for a domain after an
-   * apply (item 6 — requested-vs-applied honesty). Sources of truth, in
-   * order: the driver's own confirmation line on the apply transcript
-   * (`GPU clocks set to "(gpuClkMin 0, gpuClkMax 2200)" for GPU …`, with the
-   * bare-paren shapes kept for compatibility), then a
-   * sysfs read-back for CPU domains on a local unit. The boot unit file is
-   * the DESIRED state, never an observation — it is deliberately not used
-   * here. Returns the MHz in effect, or null when no observation was
-   * possible (the caller then reports the request verbatim with an
-   * explicit verification warning — never a fabricated confirmation).
-   */
-  async _verifyAppliedClockCap(domain, applyStdout) {
-    const confirmed = parseGpuSetClocksReply(applyStdout);
-    if (domain === "gpu") return confirmed; // stdout is the only truth here
-    if (confirmed != null) return confirmed;
-    if (!this.spark.isLocal) return null; // no sysfs view of a remote host
-    const cores = this._cpuDomainCores(domain);
-    const vals = [];
-    for (const cpuN of cores) {
-      const raw = this._readSysFile(
-        path.join(HOST_PATHS.SYS, "devices/system/cpu", cpuN, "cpufreq/max_perf")
-      );
-      if (raw == null) continue;
-      const n = parseInt(String(raw).trim(), 10);
-      if (Number.isFinite(n) && n > 0) vals.push(n);
-    }
-    return vals.length ? Math.round(Math.min(...vals) / 1000) : null;
+  /** True when this unit has the SSH settings the clock helper route needs. */
+  _hasClockSsh() {
+    const ssh = this.spark?.ssh || {};
+    return Boolean((ssh.host || this.spark?.lanIp) && ssh.user);
   }
 
   /**
-   * Persist through nsenter into the host mount namespace (D4): rewrite the
-   * boot unit's ExecStart for the requested value, then daemon-reload. The
-   * script travels on the helper's stdin (`sh -s`), so it needs no remote
-   * shell quoting — values are interpolated only as verified integers or
-   * fixed unit paths.
+   * The value the hardware ACTUALLY holds after an apply (item 6), taken only
+   * from the helper's own transcript: the driver's set-to line for GPU, the
+   * helper's per-core `core=… knob=… khz=<read-back>` lines for CPU (strictest
+   * core wins). Null when the transcript carries no observation — the caller
+   * then reports the request with an explicit warning.
    */
-  async _persistClockUnitLocal(domain, appliedMHz) {
-    const unit = CLOCK_DOMAIN_UNIT[domain] || CLOCK_DOMAIN_UNIT["cpu-big"];
-    const smi = this._nvidiaSmiPath || "nvidia-smi";
-    let execLine;
-    if (domain === "gpu") {
-      execLine = appliedMHz == null ? `${smi} -rgc` : `${smi} -lgc 0,${appliedMHz}`;
-    } else {
-      // Both CPU domains share ONE boot unit (cpu-clock-cap.service), so a
-      // single-domain Save must carry the sibling domain too or it would
-      // clobber the sibling's boot cap. The sibling keeps its current
-      // effective value: its volatile override when a live-only apply is in
-      // flight, else its live max_perf right now.
-      //
-      // Explicit per-core commands — NO shell loop variables. systemd expands
-      // $VAR in ExecStart (unset → empty), so a unit file must never contain
-      // a bare `$c` inside `sh -c`.
-      const cores = this._cpuDomainCores(domain);
-      if (!cores.length) throw new Error("no CPU cores discovered for this domain");
-      const parts = [];
-      for (const cpuN of cores) {
-        const base = `/sys/devices/system/cpu/${cpuN}/cpufreq`;
-        parts.push(
-          appliedMHz == null
-            ? `cat ${base}/cpuinfo_max_freq > ${base}/max_perf`
-            : `echo ${appliedMHz * 1000} > ${base}/max_perf`
-        );
-      }
-      const siblingId = domain === "cpu-big" ? "cpu-little" : "cpu-big";
-      const siblingOverride = this._clockCapsOverride?.[siblingId];
-      for (const cpuN of this._cpuDomainCores(siblingId)) {
-        let khz = null;
-        if (Number.isInteger(siblingOverride)) khz = siblingOverride * 1000;
-        else {
-          const raw = this._readSysFile(
-            path.join(HOST_PATHS.SYS, "devices/system/cpu", cpuN, "cpufreq/max_perf")
-          );
-          if (raw != null && /^\d+$/.test(raw.trim())) khz = raw.trim();
-        }
-        // Unreadable sibling core → leave it out rather than guess a value.
-        if (khz != null) {
-          parts.push(`echo ${khz} > /sys/devices/system/cpu/${cpuN}/cpufreq/max_perf`);
-        }
-      }
-      // The ExecStart list is shell syntax (redirections), so systemd must run
-      // it through /bin/sh — byte-identical to the helper's persist path
-      // (scripts/sparkdash-clock-addon/sparkdash-set-clock cpu_unit_body). No single quotes can ever
-      // occur in these commands (echo/cat paths + integers only).
-      execLine = `/bin/sh -c '${parts.join("; ")}'`;
-    }
-    const script = [
-      "set -eu",
-      `cat > /etc/systemd/system/${unit} <<'UNIT'`,
-      "[Unit]",
-      domain === "gpu"
-        ? "Description=Lock NVIDIA GPU graphics clocks to user range"
-        : "Description=sparkDash CPU clock cap (big + little domains)",
-      domain === "gpu" ? "After=nvidia-persistenced.service" : "After=multi-user.target",
-      "",
-      "[Service]",
-      "Type=oneshot",
-      `ExecStart=${execLine}`,
-      "RemainAfterExit=yes",
-      "",
-      "[Install]",
-      "WantedBy=multi-user.target",
-      "UNIT",
-      "systemctl daemon-reload",
-    ].join("\n");
-    await this._exec(
-      `nsenter --mount=/host/proc/1/ns/mnt -- sh -s <<'SPARKDASH_UNIT_SCRIPT'\n${script}\nSPARKDASH_UNIT_SCRIPT`
-    );
+  _verifyAppliedClockCap(domain, applyStdout) {
+    if (domain === "gpu") return parseGpuSetClocksReply(applyStdout);
+    const khz = parseClockHelperReply(applyStdout)
+      .cores.map((c) => c.khz)
+      .filter((n) => Number.isFinite(n) && n > 0);
+    return khz.length ? Math.round(Math.min(...khz) / 1000) : null;
   }
 
   /**

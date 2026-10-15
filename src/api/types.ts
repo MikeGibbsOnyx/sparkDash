@@ -366,9 +366,14 @@ export interface ClockCapResponse {
   appliedMHz: number | null;
   /** True when the driver/driver-table applied something other than asked. */
   snapped?: boolean;
+  /** What the helper REPORTED (persisted=1), never the request flag. */
   persisted: boolean;
   bootUnit: string | null;
-  source: "helper" | "container";
+  source: "helper";
+  /** True when appliedMHz came from a hardware read-back (or a removal). */
+  verified?: boolean;
+  /** Per-core cap file the helper actually wrote (CPU domains). */
+  knobs?: { core: string; knob: "max_perf" | "scaling_max_freq" }[];
   warnings: string[];
 }
 

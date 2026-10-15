@@ -9,19 +9,18 @@
 export const CLOCK_HELPER_BIN = "/usr/local/bin/sparkdash-set-clock";
 
 /**
- * Sentinels for the helper availability probe. The sudoers grant shipped by
- * scripts/sparkdash-clock-addon/install-clock-helper.sh grants this binary
- * (any argv). The probe still uses an argumentless run so we do not apply a
- * cap just to check install — a `sudo -n true` pre-check can never succeed
- * on a correctly provisioned host.
- * The argumentless probe makes the helper print its usage line and exit 1,
- * which proves sudo allowed it; a sudo refusal carries no usage line.
+ * Sentinels for the helper availability probe. The probe runs the pinned,
+ * no-op `--check` form granted by
+ * scripts/sparkdash-clock-addon/install-clock-helper.sh — never
+ * `sudo -n true`, which no scoped sudoers file permits, and never an apply.
  * Tokens (never sudo's own wording) keep the three causes distinct.
  */
 export const HELPER_PROBE_OK = "sparkdash-helper-ok";
 export const HELPER_PROBE_REFUSED = "sparkdash-helper-refused";
 export const HELPER_PROBE_MISSING = "sparkdash-helper-missing";
-/** Sentinel the apply argv emits when sudo refuses the argumentless probe. */
+/** The ok line `sparkdash-set-clock --check` prints (helper contract). */
+export const HELPER_CHECK_OK = "sparkdash-set-clock: ok";
+/** Sentinel the apply argv emits when sudo refuses the --check probe. */
 export const HELPER_REFUSED_SENTINEL = "sparkdash-probe-sentinel";
 
 /** The editable clock domains (D1). */
@@ -262,6 +261,32 @@ export function parseGpuSetClocksReply(stdout) {
   return Number.isFinite(v) && v > 0 ? v : null;
 }
 
+/**
+ * Parse the helper's machine lines (scripts/sparkdash-clock-addon/sparkdash-set-clock):
+ *   core=cpuN knob=<max_perf|scaling_max_freq> khz=<read-back>   (CPU, per core)
+ *   persisted=<0|1>
+ * `persisted` is null when the line is absent (an older helper) — callers
+ * must treat null as "not persisted", never as the request flag.
+ * @param {string} stdout
+ * @returns {{ persisted: boolean|null, cores: Array<{core: string, knob: string, khz: number|null}> }}
+ */
+export function parseClockHelperReply(stdout) {
+  const cores = [];
+  let persisted = null;
+  for (const line of String(stdout ?? "").split("\n")) {
+    const t = line.trim();
+    const c = t.match(/^core=(cpu\d+)\s+knob=(max_perf|scaling_max_freq)\s+khz=(\d*)$/);
+    if (c) {
+      const n = c[3] === "" ? null : Number(c[3]);
+      cores.push({ core: c[1], knob: c[2], khz: Number.isFinite(n) ? n : null });
+      continue;
+    }
+    const p = t.match(/^persisted=([01])$/);
+    if (p) persisted = p[1] === "1";
+  }
+  return { persisted, cores };
+}
+
 /** True when the apply transcript shows the helper finished its work. */
 export function isClockHelperDoneReply(stdout) {
   return /(^|\n)\s*All done\.\s*$/i.test(String(stdout ?? ""));
@@ -339,17 +364,13 @@ export function validateClockCapRequest(body, domains) {
 /**
  * Build the SSH command that runs the privileged clock helper (D4).
  *
- * The shipped sudoers grant is a single argumentless command
- * (`NOPASSWD: /usr/local/bin/sparkdash-set-clock`), so the chain never uses
- * `sudo -n true` — it would always fail (exit 126) on a correctly provisioned
- * box and the helper could never run. Instead:
+ * Every form the shipped sudoers grant allows is a complete, pinned argv —
+ * including `--check`, the no-op availability form (no bare-binary entry
+ * exists, which sudoers would read as "any argv"). The chain:
  *   1. verify the helper exists and is executable (exit 127 when not);
- *   2. probe by running the granted command EXACTLY as sudoers allows it —
- *      argumentless. The helper prints its usage line and exits 1, which
- *      proves sudo allowed it; sudo's own refusals ("a password is required",
- *      "not allowed") also exit 1 but carry no usage line, and only those hit
- *      the sentinel + exit 126.
- * Distinct exit codes let the UI name the real cause.
+ *   2. `sudo -n <helper> --check` must print the ok line, else sudo refused
+ *      (sentinel + exit 126) — distinct exit codes name the real cause;
+ *   3. run the pinned apply argv.
  * @param {{ domain: string, maxMHz: number | null, persist: boolean }} req
  * @param {{ helperBin?: string }} [opts]
  */
@@ -358,9 +379,8 @@ export function buildClockHelperArgv(req, opts = {}) {
   const q = (s) => `'${String(s).replace(/'/g, "'\\''")}'`;
   const args = [
     `test -x ${helperBin} || { echo "missing ${helperBin}" >&2; exit 127; }`,
-    `out=$(sudo -n ${helperBin} 2>&1); rc=$?; ` +
-      `if [ "$rc" -ne 0 ] && ! printf '%s' "$out" | grep -q '^usage:'; then ` +
-      `echo "${HELPER_REFUSED_SENTINEL}: sudo -n refused for ${helperBin}" >&2; exit 126; fi`,
+    `sudo -n ${helperBin} --check 2>/dev/null | grep -q '${HELPER_CHECK_OK}' || ` +
+      `{ echo "${HELPER_REFUSED_SENTINEL}: sudo -n refused for ${helperBin}" >&2; exit 126; }`,
   ];
   const parts = [`sudo -n ${helperBin}`, `--domain ${q(req.domain)}`];
   if (req.maxMHz == null) {
@@ -374,11 +394,11 @@ export function buildClockHelperArgv(req, opts = {}) {
 }
 
 /**
- * Availability probe for SystemCollector.checkClockHelper — exercises exactly
- * the scoped grant (argumentless sudo of the helper binary). Always exits 0
- * and reports one of the HELPER_PROBE_* tokens on stdout, so the caller can
- * distinguish missing-binary from sudo-refused from available without
- * depending on sudo's message wording.
+ * Availability probe for SystemCollector.checkClockHelper — runs exactly the
+ * pinned `--check` form (a no-op). Always exits 0 and reports one of the
+ * HELPER_PROBE_* tokens on stdout, so the caller can distinguish
+ * missing-binary from sudo-refused from available without depending on
+ * sudo's message wording.
  * @param {{ helperBin?: string }} [opts]
  * @returns {string}
  */
@@ -386,8 +406,7 @@ export function buildHelperProbeCommand(opts = {}) {
   const helperBin = opts.helperBin || CLOCK_HELPER_BIN;
   return [
     `test -x ${helperBin} || { echo "${HELPER_PROBE_MISSING}"; exit 0; }`,
-    `out=$(sudo -n ${helperBin} 2>&1); rc=$?`,
-    `if [ "$rc" -eq 0 ] || printf '%s' "$out" | grep -q '^usage:'; then echo "${HELPER_PROBE_OK}"; else echo "${HELPER_PROBE_REFUSED}"; fi`,
+    `if sudo -n ${helperBin} --check 2>/dev/null | grep -q '${HELPER_CHECK_OK}'; then echo "${HELPER_PROBE_OK}"; else echo "${HELPER_PROBE_REFUSED}"; fi`,
   ].join("; ");
 }
 
@@ -503,7 +522,7 @@ export function expandCpuToken(token) {
 export function parseCpuBootUnitDefaults(raw, coreMaxKhz) {
   const out = {};
   const text = String(raw ?? "");
-  const re = /echo\s+(\d+)\s*>\s*\/sys\/devices\/system\/cpu\/([^\s/]+)\/cpufreq\/max_perf/g;
+  const re = /echo\s+(\d+)\s*>\s*\/sys\/devices\/system\/cpu\/([^\s/]+)\/cpufreq\/(?:max_perf|scaling_max_freq)/g;
   let m;
   while ((m = re.exec(text)) !== null) {
     const khz = Number(m[1]);
@@ -521,8 +540,8 @@ export function parseCpuBootUnitDefaults(raw, coreMaxKhz) {
 /**
  * Map a live read (cpuDomains + gpuLock from _getClockCaps) plus discovered
  * bounds into the client-facing ClockCapDomain list (D1). `writable` mirrors
- * the apply paths: local units are writable via the container root path;
- * remote units need the provisioned helper.
+ * the single apply path: every unit (local or remote) needs the provisioned
+ * host helper.
  * @param {object} p
  * @returns {Array<{id: string, label: string, currentMHz: number|null, hardMinMHz: number, hardMaxMHz: number, stepMHz: number, presets: Array<{label: string, value: number|null}>, unitPath: string|null, writable: boolean, reason?: string}>}
  */

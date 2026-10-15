@@ -371,24 +371,6 @@ export function GpuPanel({
         </div>
       )}
 
-      {/* Per-card breakdown — only when the host has more than one GPU */}
-      {multiGpu && (
-        <div className="sp-section">
-          <div className="eyebrow">{devices.length} GPUs</div>
-          <div className="sp-devices">
-            {devices.map((d) => (
-              <GpuDeviceRow
-                key={d.uuid ?? d.index}
-                device={d}
-                vramContext={vramContext}
-                sparkId={sparkId}
-                temperatureUnit={temperatureUnit}
-              />
-            ))}
-          </div>
-        </div>
-      )}
-
       {/* GPU-allocated memory (shown here only when the Unified memory panel is not) */}
       {gpu && !hideMemory && (
         <div className="sp-section">

@@ -546,9 +546,9 @@ The **Clock Cap** rows in the GPU and CPU panels become clickable: pick a value 
 |------------|---------|
 | **Opt-in per Spark** | `clockControlEnabled` (default **off**) in **Edit Spark**; the routes answer 403 while off |
 | **Hardware-bounded** | Bounds are discovered at runtime — CPU domains from `cpuinfo_min_freq`/`cpuinfo_max_freq` (grouped by domain: X925 big cores / A725 little cores), GPU ceiling from the `nvidia-smi -q -d CLOCK` *Default Applications Clock → Graphics* value. Nothing is hardcoded |
-| **Two CPU domains** | The big (X925) and little (A725) core groups can be capped independently — each core in a domain gets the same `max_perf` value |
+| **Two CPU domains** | The big (X925) and little (A725) core groups can be capped independently — each core in a domain gets the same cap (`max_perf`, or `scaling_max_freq` where `max_perf` is absent) |
 | **Remove the cap** | A "No cap" preset (or clearing the value) restores each core's own hardware maximum (CPU) or removes the `nvidia-smi` lock with `-rgc` (GPU) |
-| **Apply vs Save** | **Apply (this boot only)** writes the cap now and warns that it reverts on reboot; **Save** also rewrites the boot systemd unit (`cpu-clock-cap.service` / `gpu-clock-lock.service`) and runs `daemon-reload`, so it persists. Both CPU domains share one unit, so a single-domain Save regenerates the sibling domain's lines too (from its current live cap) rather than wiping them — byte-identical whether the host helper or the container path does the writing |
+| **Apply vs Save** | **Apply (this boot only)** writes the cap now and warns that it reverts on reboot; **Save** also rewrites the boot systemd unit (`cpu-clock-cap.service` / `gpu-clock-lock.service`) runs `daemon-reload` and `systemctl enable`, so it persists — and the response says `persisted: false` with a reboot warning if any of that failed. Both CPU domains share one unit, so a single-domain Save regenerates the sibling domain's lines too (from its current live cap) rather than wiping them |
 | **Presets** | "No cap" (= the domain's hardware maximum) per domain; a boot-default revert is just saving the values the boot unit currently installs |
 | **Honest state** | A live-only apply is reported as such (with a "reverts on reboot" warning) and is shown in the UI until a fresh read converges — the dashboard never claims a persisted value it did not write |
 | **Rate limited** | Applies go through the same destructive-action rate limiter as job cancellation |
@@ -558,15 +558,18 @@ The **Clock Cap** rows in the GPU and CPU panels become clickable: pick a value 
 sparkDash never asks for a password or sudo prompt. Privileged work happens through a tiny root helper on the Spark host, invoked over SSH with a **scoped** passwordless-sudo rule — the same shape as the shutdown feature:
 
 ```bash
-# One-time, on the Spark host (as a sudo-capable user):
+# One-time, on the Spark host, from the account sparkDash SSHes in as:
 sudo ./scripts/sparkdash-clock-addon/install-clock-helper.sh
+# (or name it: sudo SPARKDASH_SSH_USER=dgx ./scripts/sparkdash-clock-addon/install-clock-helper.sh)
 ```
 
-The installer copies `scripts/sparkdash-clock-addon/sparkdash-set-clock` to `/usr/local/bin/` and adds `/etc/sudoers.d/sparkdash-clock`, validated with `visudo -c`. That rule is **this binary only**. In sudoers, listing a command with no argv means **any argv** for that binary — not “argumentless only.” The helper still parses a tight flag set. It never touches `/etc/sudoers` and grants no other sudo rights.
+**Account model.** No new login account is created. sparkDash already reaches the Spark over SSH as the unit's configured **SSH user**; the installer grants exactly that one user passwordless sudo for exactly this helper. Never `%sudo`, never `ALL ALL`, no other command. The same applies to a **local** unit: the dashboard runs the helper over SSH to the host and never writes host sysfs or boot units from inside its container, so a local unit needs its SSH host and user set in **Edit Spark** for clock control (without them the API answers 423 and names that fix).
 
-Availability is probed with an argumentless `sudo -n <helper>` so a check cannot apply a cap: the helper prints usage and exits 1. A sudo refusal exits 1 **without** the usage line (HTTP 423 + installer hint). The API always names the real cause.
+**Argv pinning.** The installer copies `scripts/sparkdash-clock-addon/sparkdash-set-clock` to `/usr/local/bin/` and writes `/etc/sudoers.d/sparkdash-clock`, validated with `visudo -c`. Each apply form is pinned: `--unlock` forms are literal, and `--max-mhz` forms are anchored sudoers regular expressions (`^--domain gpu --max-mhz [0-9]+ --persist$`, sudo ≥ 1.9.10), so an empty value, extra flags or a different order never match. There is **no** bare-binary entry (sudoers would read that as *any argv*): the availability probe is its own pinned, no-op form, `sparkdash-set-clock --check`.
 
-On a **local** Spark (dashboard container running privileged on the same machine), sparkDash falls back to the container's own root path: live caps go through the container's rw `/sys` and `nvidia-smi`, and persistence goes through `nsenter` into the host mount namespace. Which path was used is reported in the API response (`source`: `helper` or `container`).
+**What the helper does.** It applies first and persists only after a successful apply, so a failed apply never leaves a boot unit behind. CPU caps are clamped to each core's `cpuinfo_min_freq`/`cpuinfo_max_freq` and written to `max_perf`, or to `scaling_max_freq` on `cppc_cpufreq` hosts that have no writable `max_perf`. It prints one `core=cpuN knob=<file> khz=<read-back>` line per core, then `persisted=<0|1>` (1 only when the boot unit was written **and** `systemctl enable`d), then `All done.`. The API reports exactly that: `appliedMHz` is the read-back, `persisted` is the helper's answer, never the request flag.
+
+Availability is probed with `sudo -n <helper> --check`, which prints `sparkdash-set-clock: ok`, exits 0 and changes nothing (the same contract as `spark-shutdown --check`). A sudo refusal prints no ok line (HTTP 423 + installer hint). The API always names the real cause.
 
 ### Config fields (persisted on the Spark)
 

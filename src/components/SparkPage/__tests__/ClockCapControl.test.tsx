@@ -220,7 +220,7 @@ describe("ClockCapControl", () => {
       snapped: false,
       persisted: false,
       bootUnit: null,
-      source: "container",
+      source: "helper",
       warnings: [],
     });
     const save = Array.from(dialog!.querySelectorAll("button")).find((b) => b.textContent === "Save")!;
@@ -247,7 +247,7 @@ describe("ClockCapControl", () => {
       snapped: false,
       persisted: false,
       bootUnit: null,
-      source: "container",
+      source: "helper",
       warnings: [],
     });
     const save = Array.from(dialog!.querySelectorAll("button")).find((b) => b.textContent === "Save")!;
@@ -398,7 +398,7 @@ describe("ClockCapControl", () => {
       snapped: false,
       persisted: false,
       bootUnit: null,
-      source: "container",
+      source: "helper",
       warnings: ["applied this boot only — reverts on reboot"],
     });
     const { dialog } = await openDialog();

@@ -12,17 +12,23 @@ privileged actuator: CPU/GPU clock caps from the device page.
 Missing any of those: Clock Cap rows stay read-only, API 403, no slider.
 
 ```bash
-# On the Spark, as a sudo-capable user:
+# On the Spark, from the account sparkDash SSHes in as (its "SSH user"):
 sudo ./scripts/sparkdash-clock-addon/install-clock-helper.sh
 ```
 
+No new account is created: the grant names that one existing SSH user.
+
 ## Privilege facts
 
-The sudoers grant is **argv-pinned**: only the bare binary (install probe —
-prints usage, changes nothing) and `--domain cpu-big|cpu-little|gpu …` forms
-are allowed. Not `%sudo`, not any-argv: unknown flags never match the pin.
-The helper itself still accepts only `--domain` / `--max-mhz` / `--unlock` /
-`--persist` | `--no-persist`.
+Every apply form is **argv-pinned** (`--max-mhz` via anchored sudoers regex,
+digits only, sudo ≥ 1.9.10). Not `%sudo`, not `ALL ALL`. There is no
+bare-binary entry (sudoers would read it as *any argv*); the probe is the
+pinned no-op `--check` form.
+
+The helper applies first, persists only on success, falls back from
+`max_perf` to `scaling_max_freq` on `cppc_cpufreq` hosts, and reports
+`core=… knob=… khz=<read-back>` + `persisted=<0|1>`. The dashboard never
+writes host state from its container.
 
 Live apply is the default UI action. **Save (survive reboot)** writes
 `cpu-clock-cap.service` / `gpu-clock-lock.service` — a second, labeled step.

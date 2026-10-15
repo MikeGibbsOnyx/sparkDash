@@ -2,22 +2,33 @@
 # sparkdash-set-clock — privileged clock-cap helper for sparkDash.
 #
 # Runs ON THE DGX SPARK HOST as root (installed by install-clock-helper.sh,
-# invoked by the sparkDash container over SSH with passwordless sudo scoped to
-# exactly this binary). Applies a CPU or GPU clock cap live, and optionally
-# persists it to the boot systemd unit so it survives reboot.
+# invoked by the dashboard over SSH as the operator's SSH user, through a
+# passwordless sudo rule pinned to this binary's exact argv). Applies a CPU or
+# GPU clock cap live and, optionally, persists it to the boot systemd unit.
 #
 # Usage:
 #   sparkdash-set-clock --domain cpu-big|cpu-little|gpu
 #                       (--max-mhz <int> | --unlock)
 #                       (--persist | --no-persist)
 #
-# Exit codes:
-#   0 ok · 1 usage/invalid · 2 out of range · 3 unsupported domain · 4 sysfs I/O failure
+# Order of work: APPLY FIRST. Persistence is attempted only after the live
+# apply succeeded, so a failed apply never leaves a boot unit behind that
+# would install an untested value on the next boot.
 #
-# Availability probing: the scoped sudoers grant allows ONLY an argumentless
-# run of this binary. An argumentless invocation prints the usage line and
-# exits 1 — that is exactly what the dashboard's probe expects ("installed and
-# sudo-allowed"); a sudo refusal exits 1 without the usage line.
+# Output contract (parsed by the dashboard; one item per line):
+#   core=cpuN knob=<max_perf|scaling_max_freq> khz=<read-back>   (CPU only)
+#   persisted=<0|1>
+#   All done.                                                     (always last)
+# A persist that fails after a good apply prints persisted=0 plus a
+# `persist_error:` line on stderr and still exits 0 (the live cap holds).
+#
+# Exit codes:
+#   0 ok · 1 usage/invalid · 2 no cores for domain · 3 unsupported domain · 4 apply failed
+#
+# Availability probing: `sparkdash-set-clock --check` prints
+# "sparkdash-set-clock: ok", exits 0 and changes nothing. It is a pinned entry
+# in the sudoers grant like every other form (same contract as the
+# spark-shutdown helper's --check). An argumentless run prints usage, exits 1.
 set -eu
 
 CPU_SYS=${SPARKDASH_CPU_SYS:-/sys/devices/system/cpu}
@@ -27,9 +38,9 @@ GPU_UNIT=$UNIT_DIR/gpu-clock-lock.service
 SMI=${SPARKDASH_SMI:-/usr/bin/nvidia-smi}
 
 # Test hooks only: SPARKDASH_CPU_SYS / SPARKDASH_UNIT_DIR / SPARKDASH_SMI
-# redirect the sysfs, unit, and nvidia-smi paths. Under the shipped scoped
-# sudoers grant sudo resets the environment, so a remote invocation always
-# uses the real /sys, /etc, and /usr/bin/nvidia-smi.
+# redirect the sysfs, unit, and nvidia-smi paths. Under the shipped sudoers
+# grant sudo resets the environment, so a remote invocation always uses the
+# real /sys, /etc, and /usr/bin/nvidia-smi.
 DOMAIN=""
 MAX_MHZ=""
 UNLOCK=0
@@ -39,6 +50,11 @@ usage() {
   echo "usage: $0 --domain cpu-big|cpu-little|gpu (--max-mhz <int>|--unlock) (--persist|--no-persist)" >&2
   exit 1
 }
+
+if [ $# -eq 1 ] && [ "$1" = "--check" ]; then
+  echo "sparkdash-set-clock: ok"
+  exit 0
+fi
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -63,15 +79,15 @@ if [ "$UNLOCK" -eq 0 ]; then
   case "$MAX_MHZ" in
     ''|*[!0-9]*) usage ;;
   esac
+  # Strip leading zeros so $(( )) never reads the value as octal.
+  MAX_MHZ=$(printf '%s' "$MAX_MHZ" | sed 's/^0*//')
+  [ -n "$MAX_MHZ" ] || usage
 fi
 
 # ─── helpers ──────────────────────────────────────────────
 
-# cores_for DOMAIN → space-separated cpuN list, grouped by cpuinfo_max_freq
-# (never hardcoded indices; scaling_available_frequencies does not exist on
-# this platform). Reads from $CPU_SYS. Cores are numerically sorted so the
-# generated unit is deterministic and byte-identical to the container persist
-# path (glob order would put cpu10 before cpu2).
+# cores_for DOMAIN → cpuN list grouped by cpuinfo_max_freq (never hardcoded
+# indices), numerically sorted so the generated unit is deterministic.
 cores_for() {
   d=$1
   for c in "$CPU_SYS"/cpu[0-9]*; do
@@ -87,7 +103,36 @@ cores_for() {
   done | sort | cut -d' ' -f2
 }
 
-# Write max_perf for one core. Un_lock=1 writes the core's own hardware max.
+# Knob the live apply ACTUALLY used, set by write_core. The boot unit must
+# target the same file: if max_perf exists but refused the write, the unit
+# would otherwise silently re-target the file that just failed.
+FORCE_SCALING=0
+
+# knob_for cpuN → the cap file the boot unit writes for this core:
+# scaling_max_freq when the live apply had to fall back (or max_perf is
+# absent), max_perf otherwise. Empty when neither exists.
+knob_for() {
+  base="$CPU_SYS/$1/cpufreq"
+  if [ "$FORCE_SCALING" -eq 0 ] && [ -e "$base/max_perf" ]; then echo max_perf
+  elif [ -e "$base/scaling_max_freq" ]; then echo scaling_max_freq
+  elif [ -e "$base/max_perf" ]; then echo max_perf
+  fi
+}
+
+# clamp_khz cpuN KHZ → KHZ clamped into this core's [cpuinfo_min, cpuinfo_max].
+clamp_khz() {
+  base="$CPU_SYS/$1/cpufreq"
+  v=$2
+  lo=$(cat "$base/cpuinfo_min_freq" 2>/dev/null || true)
+  hi=$(cat "$base/cpuinfo_max_freq" 2>/dev/null || true)
+  case "$hi" in ''|*[!0-9]*) ;; *) [ "$v" -le "$hi" ] || v=$hi ;; esac
+  case "$lo" in ''|*[!0-9]*) ;; *) [ "$v" -ge "$lo" ] || v=$lo ;; esac
+  echo "$v"
+}
+
+# write_core cpuN KHZ UNLOCK → write the cap (max_perf, falling back to
+# scaling_max_freq when max_perf is absent or refuses the write), read it
+# back, and echo the knob that actually holds the value.
 write_core() {
   cpu_n=$1
   khz=$2
@@ -96,8 +141,21 @@ write_core() {
   if [ "$unlock" -eq 1 ]; then
     khz=$(cat "$base/cpuinfo_max_freq" 2>/dev/null || true)
     [ -n "$khz" ] || { echo "cannot read cpuinfo_max_freq for $cpu_n" >&2; return 1; }
+  else
+    khz=$(clamp_khz "$cpu_n" "$khz")
   fi
-  echo "$khz" > "$base/max_perf" || { echo "max_perf write failed for $cpu_n" >&2; return 1; }
+  knob=""
+  if [ -e "$base/max_perf" ] && { echo "$khz" > "$base/max_perf"; } 2>/dev/null; then
+    knob=max_perf
+  elif [ -e "$base/scaling_max_freq" ] && { echo "$khz" > "$base/scaling_max_freq"; } 2>/dev/null; then
+    knob=scaling_max_freq
+    [ -e "$base/max_perf" ] && FORCE_SCALING=1
+  else
+    echo "cap write failed for $cpu_n (no writable max_perf or scaling_max_freq)" >&2
+    return 1
+  fi
+  back=$(cat "$base/$knob" 2>/dev/null || true)
+  echo "core=$cpu_n knob=$knob khz=$back"
 }
 
 # ─── GPU ──────────────────────────────────────────────────
@@ -136,12 +194,8 @@ UNIT
 cpu_apply() {
   cores=$(cores_for "$DOMAIN")
   [ -n "$cores" ] || { echo "no cores found for domain $DOMAIN" >&2; return 2; }
-  # sysfs max_perf is in kHz; the request is MHz. Unlock lets each core write
-  # its own cpuinfo_max_freq.
-  khz=""
-  if [ "$UNLOCK" -eq 0 ]; then
-    khz=$((MAX_MHZ * 1000))
-  fi
+  khz=0
+  [ "$UNLOCK" -eq 1 ] || khz=$((MAX_MHZ * 1000))
   rc=0
   for cpu_n in $cores; do
     write_core "$cpu_n" "$khz" "$UNLOCK" || rc=1
@@ -149,56 +203,32 @@ cpu_apply() {
   return $rc
 }
 
-# unit_exec_line DOMAIN UNLOCK KHZ → the ExecStart command list for that
-# domain's cores. Shared by the unit generator so both persist paths emit the
-# same per-core command shape: `cmd; cmd` — no leading/trailing separators,
-# exactly matching SystemCollector._persistClockUnitLocal's parts.join("; ").
-unit_exec_line() {
-  d=$1
-  unlock=$2
-  khz=$3
+cpu_unit_body() {
+  # Both CPU domains share ONE boot unit, so a single-domain Save regenerates
+  # the sibling domain from its current live cap (unreadable → omitted, never
+  # guessed). Explicit per-core commands — no shell loop variables, because
+  # systemd expands $VAR in ExecStart. Each core targets the knob it exposes.
   cmds=""
-  for c in $(cores_for "$d"); do
+  for c in $(cores_for "$DOMAIN"); do
     base="$CPU_SYS/$c/cpufreq"
-    if [ "$unlock" -eq 1 ]; then
-      cmd="cat $base/cpuinfo_max_freq > $base/max_perf"
+    knob=$(knob_for "$c")
+    [ -n "$knob" ] || continue
+    if [ "$UNLOCK" -eq 1 ]; then
+      cmd="cat $base/cpuinfo_max_freq > $base/$knob"
     else
-      cmd="echo $khz > $base/max_perf"
+      cmd="echo $(clamp_khz "$c" $((MAX_MHZ * 1000))) > $base/$knob"
     fi
     if [ -z "$cmds" ]; then cmds="$cmd"; else cmds="$cmds; $cmd"; fi
   done
-  printf '%s' "$cmds"
-}
-
-cpu_unit_body() {
-  # Both CPU domains share ONE boot unit (cpu-clock-cap.service), so a
-  # single-domain Save MUST regenerate the sibling domain too — reading each
-  # sibling core's current max_perf and omitting cores whose value is
-  # unreadable (same no-guess rule as the container persist path in
-  # SystemCollector._persistClockUnitLocal). Otherwise a Save on cpu-big
-  # would silently delete cpu-little's boot cap and that core would boot at
-  # hardware maximum.
-  #
-  # Explicit per-core commands in the unit file — NO shell loop variables.
-  # systemd expands $VAR in ExecStart (unset -> empty), so a unit file must
-  # never carry a bare `$c` inside `sh -c`.
-  cmds=$(unit_exec_line "$DOMAIN" "$UNLOCK" "$((MAX_MHZ * 1000))")
   [ -n "$cmds" ] || { echo "no cores found for domain $DOMAIN" >&2; return 2; }
-  if [ -n "$OTHER_DOMAIN" ]; then
-    sibling_cmds=""
-    for c in $(cores_for "$OTHER_DOMAIN"); do
-      base="$CPU_SYS/$c/cpufreq"
-      khz=$(cat "$base/max_perf" 2>/dev/null || true)
-      case "$khz" in
-        ''|*[!0-9]*) continue ;;  # unreadable → omit rather than guess
-      esac
-      if [ -z "$sibling_cmds" ]; then sibling_cmds="echo $khz > $base/max_perf"; else sibling_cmds="$sibling_cmds; echo $khz > $base/max_perf"; fi
-    done
-    if [ -n "$sibling_cmds" ]; then cmds="$cmds; $sibling_cmds"; fi
-  fi
-  # The ExecStart list is shell syntax (redirections), so systemd must run it
-  # through /bin/sh — same wrapping as the container persist path. Blank lines
-  # below match SystemCollector._persistClockUnitLocal byte for byte.
+  for c in $(cores_for "$OTHER_DOMAIN"); do
+    base="$CPU_SYS/$c/cpufreq"
+    knob=$(knob_for "$c")
+    [ -n "$knob" ] || continue
+    khz=$(cat "$base/$knob" 2>/dev/null || true)
+    case "$khz" in ''|*[!0-9]*) continue ;; esac
+    cmds="$cmds; echo $khz > $base/$knob"
+  done
   cat <<UNIT
 [Unit]
 Description=sparkDash CPU clock cap (big + little domains)
@@ -214,35 +244,47 @@ WantedBy=multi-user.target
 UNIT
 }
 
-# ─── persist + run ────────────────────────────────────────
-
-if [ "$PERSIST" -eq 1 ]; then
+# persist_unit → 0 only when the boot unit is written AND enabled.
+persist_unit() {
+  # Never pretend to enable a unit where systemd is not running (e.g. inside
+  # a container). The sandbox hook (SPARKDASH_UNIT_DIR) is the only exception.
+  if [ -z "${SPARKDASH_UNIT_DIR:-}" ] && [ ! -d /run/systemd/system ]; then
+    echo "persist_error: systemd is not running on this host" >&2
+    return 1
+  fi
   case "$DOMAIN" in
-    gpu) UNIT=$GPU_UNIT; gpu_unit_body > "$UNIT.tmp" ;;
-    *) UNIT=$CPU_UNIT; cpu_unit_body > "$UNIT.tmp" ;;
+    gpu) UNIT=$GPU_UNIT; gpu_unit_body > "$UNIT.tmp" || { rm -f "$UNIT.tmp"; return 1; } ;;
+    *) UNIT=$CPU_UNIT; cpu_unit_body > "$UNIT.tmp" || { rm -f "$UNIT.tmp"; return 1; } ;;
   esac
   chmod 644 "$UNIT.tmp"
-  # Validate then atomically move into place (systemd refuses world-writable units).
   mv "$UNIT.tmp" "$UNIT"
-  # Review fix: "persist never runs systemctl enable" — the boot unit must
-  # actually be enabled, not merely present. Enable it here so Save is a
-  # complete, self-contained operation (idempotent; harmless if already on).
-  # Honors SPARKDASH_UNIT_DIR so test/sandbox installs enable within their
-  # own unit dir instead of the host's wants tree.
+  name=$(basename "$UNIT")
   if [ -n "${SPARKDASH_UNIT_DIR:-}" ]; then
-    mkdir -p "${SPARKDASH_UNIT_DIR}/multi-user.target.wants"
-    ln -sf "${SPARKDASH_UNIT_DIR}/$(basename "$UNIT")" \
-      "${SPARKDASH_UNIT_DIR}/multi-user.target.wants/$(basename "$UNIT")"
+    mkdir -p "$UNIT_DIR/multi-user.target.wants"
+    ln -sf "$UNIT" "$UNIT_DIR/multi-user.target.wants/$name"
   else
-    systemctl enable "$UNIT" 2>/dev/null || {
-      mkdir -p /etc/systemd/system/multi-user.target.wants
-      ln -sf "$UNIT" "/etc/systemd/system/multi-user.target.wants/$(basename "$UNIT")"
-    }
+    systemctl daemon-reload || { echo "persist_error: daemon-reload failed" >&2; return 1; }
+    systemctl enable "$name" >/dev/null 2>&1 || { echo "persist_error: systemctl enable $name failed" >&2; return 1; }
   fi
-  systemctl daemon-reload
-fi
+}
+
+# ─── apply, then persist ──────────────────────────────────
 
 case "$DOMAIN" in
-  gpu) gpu_apply ;;
-  *) cpu_apply ;;
+  gpu) gpu_apply || { echo "apply failed; nothing persisted" >&2; exit 4; } ;;
+  *)
+    set +e; cpu_apply; arc=$?; set -e
+    if [ "$arc" -ne 0 ]; then
+      echo "apply failed; nothing persisted" >&2
+      [ "$arc" -eq 2 ] && exit 2
+      exit 4
+    fi
+    ;;
 esac
+
+persisted=0
+if [ "$PERSIST" -eq 1 ]; then
+  if persist_unit; then persisted=1; fi
+fi
+echo "persisted=$persisted"
+echo "All done."

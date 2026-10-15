@@ -181,20 +181,21 @@ test("validateClockCapRequest tolerates a missing/undefined body", () => {
 
 // ─── Helper argv (D4) ─────────────────────────────────────
 //
-// The shipped sudoers grant is this binary (`NOPASSWD: …/sparkdash-set-clock`).
-// A no-argv sudoers line matches any argv. The chain must never gate on
-// `sudo -n true` — no scoped sudoers file permits that.
+// The shipped sudoers grant pins every argv, including the no-op `--check`
+// probe; there is no bare-binary (= any argv) entry. The chain must never
+// gate on `sudo -n true` — no scoped sudoers file permits that.
 
-test("buildClockHelperArgv probes the granted binary argumentlessly with distinct 127/126 exits", () => {
+test("buildClockHelperArgv probes with the pinned --check form, distinct 127/126 exits", () => {
   const cmd = buildClockHelperArgv({ domain: "gpu", maxMHz: 2200, persist: true });
   assert.match(cmd, /^test -x \/usr\/local\/bin\/sparkdash-set-clock \|\| \{ echo "missing/);
   assert.match(cmd, /exit 127; \}/);
-  // Availability probe = the granted command itself, argumentless; a sudo
-  // refusal (no usage line, nonzero rc) hits the sentinel + exit 126.
-  assert.match(cmd, /out=\$\(sudo -n \/usr\/local\/bin\/sparkdash-set-clock 2>&1\); rc=\$\?/);
+  // Availability gate = the pinned no-op `--check` form; a sudo refusal
+  // (no ok line) hits the sentinel + exit 126.
+  assert.match(cmd, /sudo -n \/usr\/local\/bin\/sparkdash-set-clock --check 2>\/dev\/null \| grep -q 'sparkdash-set-clock: ok'/);
+  assert.doesNotMatch(cmd, /sudo -n \/usr\/local\/bin\/sparkdash-set-clock 2>&1/, "never an argumentless sudo");
   assert.doesNotMatch(cmd, /sudo -n true/);
   assert.match(cmd, new RegExp(`echo "${HELPER_REFUSED_SENTINEL}: sudo -n refused`));
-  assert.match(cmd, /exit 126; fi/);
+  assert.match(cmd, /exit 126; \}/);
   assert.match(cmd, /sudo -n \/usr\/local\/bin\/sparkdash-set-clock --domain 'gpu' --max-mhz 2200 --persist$/);
 });
 
@@ -210,26 +211,26 @@ test("buildClockHelperArgv single-quotes the domain", () => {
 
 // ─── Availability probe (exercises exactly the scoped grant) ────────────────
 
-/** Usage-printing stub with the real helper's argv semantics (lines 27-30). */
+/** Stub with the real helper's --check contract (ok line, exit 0). */
 function makeFakeHelper(dir) {
   const p = path.join(dir, "sparkdash-set-clock");
   fs.writeFileSync(
     p,
-    "#!/bin/sh\necho 'usage: sparkdash-set-clock --domain cpu-big|cpu-little|gpu (--max-mhz <int>|--unlock) (--persist|--no-persist)' >&2\nexit 1\n"
+    '#!/bin/sh\n[ "$#" -eq 1 ] && [ "$1" = "--check" ] && { echo "sparkdash-set-clock: ok"; exit 0; }\necho "usage: sparkdash-set-clock ..." >&2\nexit 1\n'
   );
   fs.chmodSync(p, 0o755);
   return p;
 }
 
-/** sudo stub enforcing the SCOPED grant: only `-n <bin>` with no args. */
+/** sudo stub enforcing the SCOPED grant: only `-n <bin> --check`. */
 function makeScopedSudo(dir, allowedBin, { alwaysRefuse = false } = {}) {
   const p = path.join(dir, "sudo");
   const body = alwaysRefuse
     ? `#!/bin/sh\necho "sudo: a password is required" >&2\nexit 1\n`
     : `#!/bin/sh
 [ "\$1" = "-n" ] || { echo "sudo: a password is required" >&2; exit 1; }
-[ "\$#" -eq 2 ] && [ "\$2" = "${allowedBin}" ] || { echo "sudo: a password is required" >&2; exit 1; }
-exec "\$2"
+[ "\$#" -eq 3 ] && [ "\$2" = "${allowedBin}" ] && [ "\$3" = "--check" ] || { echo "sudo: a password is required" >&2; exit 1; }
+exec "\$2" "\$3"
 `;
   fs.writeFileSync(p, body);
   fs.chmodSync(p, 0o755);
@@ -247,7 +248,7 @@ test("probe reports available under ONLY the scoped grant (no unrestricted NOPAS
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clock-probe-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const helper = makeFakeHelper(dir);
-  makeScopedSudo(dir, helper); // refuses everything except the argumentless helper
+  makeScopedSudo(dir, helper); // refuses everything except `<helper> --check`
   const probeCmd = buildHelperProbeCommand({ helperBin: helper });
   assert.ok(!probeCmd.includes("sudo -n true"), "the probe must not depend on `sudo -n true`");
   assert.equal(runProbe(probeCmd, dir).trim(), HELPER_PROBE_OK);
