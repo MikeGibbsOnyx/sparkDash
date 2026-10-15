@@ -345,6 +345,8 @@ Tailscale says who each person is; sparkDash decides what they can do.
 
 One address for every AI tool on your team, on your own hardware. Provider keys stay in the Gateway; Tailscale says who each request is from.
 
+**Installing or upgrading the Onyx build:** follow [docs/ONYX-INSTALL.md](./docs/ONYX-INSTALL.md), step by step.
+
 1. `docker compose up -d` starts the dashboard and the `gateway` service (non-root, read-only, no capabilities, only its own volumes).
 2. Open **AI Gateway** in the sidebar: **Turn on**, paste a provider key (Anthropic, OpenAI, Gemini or OpenRouter) and press **Test and save**, or switch on a local model server.
 3. **Publish on your tailnet** (or run `sudo tailscale serve --bg --https=8443 http://127.0.0.1:5556`) and share the address. People open it, pick their tool and copy one block.
